@@ -1,0 +1,79 @@
+# @package _global_
+# Experiment 1, PROTEIN arm -- stage 2: fine-tune on a mix of ZINC and Poc2Mol outputs.
+#
+# Decoder sees Poc2Mol's predicted ligand density AND the pocket's protein density.
+# This is the intervention. Differs from exp1_combined_baseline.yaml ONLY in the protein
+# channels -- same data, steps, effective batch, LR schedule and seed.
+#
+# The frozen Poc2Mol is SHARED between the two arms: its architecture is untouched by this
+# intervention, so sharing it removes a confound and halves the compute. Point
+# data.poc2mol_ckpt_path at the single Poc2Mol trained for this experiment.
+defaults:
+  - _self_
+  - override /data: vox2smiles_combined_data_from_hiqbind
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_combined_protein"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "protein_channels"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+
+# Stage 1 weights for THIS arm. The channel counts differ between arms, so these are not
+# interchangeable -- loading the wrong one fails on the patch-embedding conv.
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_combined"
+    job_type: "finetune"
+    tags: ["exp1", "protein_channels", "hiqbind"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 16
+  inject_protein: true
+  n_protein_channels: 4
+  # Hide the pocket from 25% of samples that have one. Without this the decoder can grow
+  # dependent on a signal the ligand-only regime cannot supply, and the masked-protein
+  # ablation stops being interpretable.
+  protein_mask_probability: 0.25
+  # See CLAUDE.md §3c: an absolute threshold gates on ligand composition rather than
+  # reconstruction quality, so it is off. Set quality_filter=relative plus a
+  # max_poc2mol_loss expressed as excess-over-floor if a gate is wanted.
+  quality_filter: none
+  max_poc2mol_loss: null
+  config:
+    include_hydrogens: false
+    has_protein: true
+    batch_size: 64
+    target_samples_per_batch: 512
+
+model:
+  override_optimizer_on_load: false
+  visualise_val: false
+  config:
+    num_channels: 14
+    lr: 1e-4
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 2000
+      num_stable_steps: 400000
+      num_decay_steps: 400000
+      min_lr_ratio: 0.3
+      interval: "step"
+
+trainer:
+  val_check_interval: 6000

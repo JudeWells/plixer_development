@@ -1,0 +1,61 @@
+_target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
+data_path: "../geom/rdkit_folder/drugs"
+num_workers: 16
+# Experiment 1 knobs. inject_protein=false reproduces the published ligand-only decoder.
+inject_protein: false
+n_protein_channels: 4
+protein_mask_probability: 0.0
+config:
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  batch_size: 32
+  max_smiles_len: 200
+  has_protein: false
+  # Declared explicitly (rather than left to the dataclass default) so they can be set with
+  # a plain `data.config.voxel_aggregation=sum` override. Hydra rejects a bare override for
+  # a key absent from the config node, which is what silently killed the first attempt at
+  # the stage-1 production runs.
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  # 11-channel scheme, IDENTICAL to configs/data/poc2mol_hiqbind_v2_11ch.yaml. These two must
+  # agree exactly: the decoder is pretrained here on ground-truth ligand grids and then fine-
+  # tuned on Poc2Mol's output, so any divergence in the channel map is a train/serve mismatch
+  # straight through the middle of the combined model -- the same failure mode as the
+  # case-mismatched halogens in CLAUDE.md §3b bug 2.
+  # The catch-all MUST stay last: ligand_last_channel_is_catch_all inverts the final entry.
+  ligand_channel_names: [ "carbon_aliphatic", "carbon_aromatic", "nitrogen_with_h",
+                          "nitrogen_no_h", "oxygen_with_h", "oxygen_no_h", "sulfur",
+                          "halogen", "fluorine", "hbond_acceptor", "other" ]
+  ligand_channels:
+    0: [ "C_aliphatic" ]
+    1: [ "C_aromatic" ]
+    2: [ "N_withH" ]
+    3: [ "N_noH" ]
+    4: [ "O_withH" ]
+    5: [ "O_noH" ]
+    6: [ "S" ]
+    7: [ "Cl", "Br", "I" ]
+    8: [ "F" ]
+    9: [ "HBA" ]
+    10: [ "C", "H", "O", "N", "S", "Cl", "F", "I", "Br" ]
+# Splits are preserved EXACTLY from v1: index_train.csv (5,477 files / 8,859,304 molecules)
+# and index_val.csv (60 files / 104,029 molecules) list the same file sets, verified
+# identical during regeneration. So v1 and v2 stage-1 runs are directly comparable, and any
+# ZINC val/loss difference is attributable to the data representation alone.
+train_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_train.csv
+  random_rotation: true
+  random_translation: 6.0
+  config: ${data.config}
+
+# Validation datasets
+val_datasets:
+  default_val:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_val.csv
+    # deterministic, for the same reason as the Poc2Mol val set (§3e)
+    random_rotation: false
+    random_translation: 0.0
+    config: ${data.config}

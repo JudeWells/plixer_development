@@ -1,29 +1,64 @@
 # data config for training vox2smiles model on zinc data and outputs of poc2mol model
+#
+# The frozen Poc2Mol is configured HERE, on the datamodule, not on the datasets. It used to
+# be constructed inside Poc2MolOutputDataset, which put it on cuda:0 from the dataset
+# constructor and ran it one sample at a time -- unusable under DDP and the reason
+# num_workers had to be 0. It now runs batched, on each rank's own device, from
+# on_after_batch_transfer. See src/data/vox2smiles/poc2mol_inference.py.
 _target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
 defaults:
   - datasets@train_dataset.poc2mol_output_dataset.complex_dataset: complex_dataset
   - datasets@val_datasets.roc_auc_plinder.complex_dataset: complex_dataset
   - datasets@val_datasets.hiqbind_val.complex_dataset: complex_dataset
-  - /model@train_dataset.poc2mol_output_dataset.poc2mol_model: poc2mol
-  - /model@val_datasets.hiqbind_val.poc2mol_model: poc2mol
-  - /model@val_datasets.roc_auc_plinder.poc2mol_model: poc2mol
+  - /model@poc2mol_model: poc2mol_frozen
   - datasets@val_datasets.roc_auc_plinder.decoy_smiles_list: plinder_decoy_smiles
   - datasets@val_datasets.roc_auc_plinder.complex_dataset.config.system_ids: plinder_system_ids
   - _self_
-  # - /data@train_dataset.poc2mol_output_dataset.complex_dataset: poc2mol_data
+
 data_path: "../geom/rdkit_folder/drugs"
-num_workers: 0
+
+# CPU-only work now happens in the workers, so this is no longer forced to 0.
+# 128 cores / 8 ranks = 16.
+num_workers: 16
+
+# The shared Poc2Mol chosen in §3g. NOT the released epoch_173.ckpt, which was fitted
+# to the pre-fix channel encoding and degrades from 0.816 to 0.968 on corrected input.
+poc2mol_ckpt_path: checkpoints/exp1_shared_poc2mol/poc2mol_cons4_drop_epoch307.ckpt
+n_protein_channels: 4
+# How (and whether) to reject poor Poc2Mol reconstructions from the training loss.
+#   none     -- train on everything. Default, and the leading option: at inference the
+#               decoder must handle whatever Poc2Mol produces, so filtering training down
+#               to the easy reconstructions is a train/serve mismatch.
+#   relative -- reject when the loss EXCEEDS its own per-sample floor by max_poc2mol_loss.
+#               Use this if a gate is wanted; it measures reconstruction quality.
+#   absolute -- legacy. Gates on ligand composition, not quality (CLAUDE.md §3c): the
+#               per-sample floor swings 0.473-0.802 with how many ligand channels are
+#               occupied, so a fixed threshold rejects halogen-free ligands however well
+#               reconstructed. Kept only to reproduce old runs.
+quality_filter: none
+max_poc2mol_loss: null
+
 config:
   _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
   batch_size: 64
   val_batch_size: 200
   secondary_val_batch_size: 50
   max_smiles_len: 200
-  has_protein: false
+  # Must be true: the protein channels are what Poc2Mol consumes. Ligand-only ZINC samples
+  # still produce the protein channel slots, empty, so both sources share a batch shape.
+  has_protein: true
+  include_hydrogens: false
+  # Declared so a plain `data.config.voxel_aggregation=...` override works. Hydra rejects a
+  # bare override for a key absent from the config node (CLAUDE.md §9c).
+  # ⚠️ Only `max` is coherent with the shared Poc2Mol checkpoint, which was trained on
+  # max-aggregated grids -- see CLAUDE.md §10b before changing this.
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+
 train_dataset:
   _target_: src.data.vox2smiles.datasets.CombinedDataset
   prob_poc2mol: 0.75 # probability of poc2mol
-  max_poc2mol_loss: 0.79
+  max_poc2mol_loss: ${data.max_poc2mol_loss}
   vox2smiles_dataset:
     _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
     data_path: ../zinc20_parquet
@@ -34,22 +69,31 @@ train_dataset:
     _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
     decoy_smiles_list: null
     include_decoys: false  # set false to exclude decoy scoring
-    ckpt_path: checkpoints/poc_vox_to_mol_vox/epoch_173.ckpt
 
 val_datasets:
   roc_auc_plinder:
     _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
     include_decoys: True
-    ckpt_path: checkpoints/poc_vox_to_mol_vox/epoch_173.ckpt
     complex_dataset:
       use_cluster_member_zero: true
       data_path: '../hiqbind/parquet/test'
-    
+
   hiqbind_val:
     _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
     decoy_smiles_list: null
     include_decoys: false
-    ckpt_path: checkpoints/poc_vox_to_mol_vox/epoch_173.ckpt
     complex_dataset:
       use_cluster_member_zero: true
       data_path: ../hiqbind/parquet/val
+
+  # Ligand-only control. Without this there is nothing to detect ZINC regression against:
+  # the decoder can trade away its pretraining ability for pocket performance and every
+  # other val curve here would still improve. Same held-out 104,029 molecules as stage 1,
+  # deterministic (no rotation/translation) so the number is comparable across runs.
+  zinc_val:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet
+    index_file: index_val.csv
+    random_rotation: false
+    random_translation: 0.0
+    config: ${data.config}

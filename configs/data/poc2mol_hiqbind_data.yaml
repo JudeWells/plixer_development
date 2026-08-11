@@ -6,14 +6,28 @@ train_dataset:
   _target_: src.data.poc2mol.datasets.ParquetDataset
   data_path: "../hiqbind/parquet/train"
   config: ${data.config}
+# Validation and test are DETERMINISTIC. They previously inherited random_rotation: true
+# and random_translation: 6.0 from data.config, and ParquetDataset draws a random member of
+# each cluster per epoch -- so every validation scored a different augmentation of a
+# different molecule. val/loss was a moving target, which is why the curves were noisy and
+# why "has it started overfitting" was hard to call. Fixing all three makes val/loss a
+# stable benchmark suitable for model selection and early stopping.
+# NOTE: this shifts the absolute value of val/loss, so numbers are not comparable with runs
+# from before 2026-08-06 (including ljv96zyo) without re-evaluating on the same setting.
 val_dataset:
   _target_: src.data.poc2mol.datasets.ParquetDataset
   data_path: "../hiqbind/parquet/val"
   config: ${data.config}
+  rotate: false
+  translation: 0.0
+  use_cluster_member_zero: true
 test_dataset:
   _target_: src.data.poc2mol.datasets.ParquetDataset
   data_path: "../hiqbind/parquet/test"
   config: ${data.config}
+  rotate: false
+  translation: 0.0
+  use_cluster_member_zero: true
 config:
   _target_: src.data.common.voxelization.config.Poc2MolDataConfig 
   remove_hydrogens: true

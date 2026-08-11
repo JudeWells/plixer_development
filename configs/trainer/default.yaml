@@ -6,6 +6,8 @@ max_epochs: 50000
 
 accelerator: gpu
 devices: 1
+num_nodes: 1
+strategy: auto
 
 # mixed precision for extra speed-up
 precision: bf16-mixed

@@ -1,0 +1,83 @@
+# @package _global_
+# Experiment 1, PROTEIN arm -- STAGE 2 of 3.
+#
+# Complexes enter with their TRUE ligand voxels, so the decoder learns to read the
+# protein channels against clean ligand density before it ever has to cope with Poc2Mol's
+# error. predicted_ligand_probability = 0.
+#
+# Resume from the previous stage's weights via ckpt_path (must be set on the command line or
+# here; the arms' weights are NOT interchangeable -- the patch-embedding conv differs in width).
+defaults:
+  - _self_
+  - override /data: vox2smiles_combined_data_from_hiqbind
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_s2_protein"
+tags: ["${task_name}", "exp1", "stage2", "protein", "seed${seed}"]
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_stage2"
+    job_type: "stage2"
+    tags: ["exp1", "stage2", "protein"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 14
+  inject_protein: true
+  n_protein_channels: 4
+  # Hide the pocket from 25% of complexes so the decoder cannot become dependent on a
+  # signal the ligand-only regime cannot supply, and so the masked ablation stays readable.
+  protein_mask_probability: 0.25
+  quality_filter: none
+  max_poc2mol_loss: null
+  predicted_ligand_probability: 0.0
+  config:
+    include_hydrogens: false
+    has_protein: true
+    batch_size: 64
+    target_samples_per_batch: 256
+  train_dataset:
+    # probability a sample is a protein-ligand complex rather than a ZINC molecule
+    prob_poc2mol: 0.5
+
+model:
+  override_optimizer_on_load: true
+  visualise_val: false
+  config:
+    num_channels: 14
+    lr: 5e-5
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 1000
+      num_stable_steps: 200000
+      num_decay_steps: 200000
+      min_lr_ratio: 0.3
+      interval: "step"
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3
+    save_last: True
+    save_weights_only: False   # full state: a weights-only resume loses Adam moments (CLAUDE.md §9b, §10c)
+    filename: "step_{step:07d}_valloss_{val/loss:.4f}"
+    auto_insert_metric_name: False
+
+trainer:
+  devices: 4
+  val_check_interval: 2000
+  max_epochs: 50

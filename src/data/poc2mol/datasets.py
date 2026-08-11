@@ -18,18 +18,62 @@ from docktgrid.molecule import MolecularComplex
 from docktgrid.molparser import MolecularData, MolecularParser, Parser
 
 
-from src.data.common.voxelization.voxelizer import UnifiedVoxelGrid
+from src.data.common.voxelization.voxelizer import UnifiedVoxelGrid, UnifiedView
+from src.data.common.voxelization.batched import atom_record_from_complex
 from src.data.common.voxelization.molecule_utils import (
     apply_random_rotation,
     apply_random_translation,
     prune_distant_atoms,
     prepare_protein_ligand_complex,
+    load_complex_from_files,
     voxelize_complex
 )
 
 import json
 from collections import defaultdict
 from tqdm import tqdm
+
+def _atomic_write(path, write_fn):
+    """Write via a temp file in the same directory, then rename.
+
+    Under DDP every rank runs this constructor at once. os.replace is atomic within a
+    filesystem, so a rank that finds the file present always sees complete content --
+    the ranks duplicate the work but never read a half-written index.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    os.close(fd)
+    try:
+        with open(tmp, "w") as f:
+            write_fn(f)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+
+def attach_atom_features(complex_obj, row, n_protein: int):
+    """Attach per-atom features from a parquet_v2 row, for the feature-based channels.
+
+    MolecularComplex concatenates protein atoms first, then ligand, and the channel masks are
+    computed over that combined list -- so the ligand's feature arrays have to be offset by
+    the protein atom count. Protein entries are left at zero: the protein channels are
+    element-only (C/O/N/S), so nothing reads them.
+
+    A row without the feature columns (the original parquet) attaches nothing, and any
+    feature-based channel then raises a clear error rather than silently mis-assigning atoms.
+    """
+    keys = ("is_aromatic", "n_hydrogens", "is_acceptor", "formal_charge")
+    if not all(f"ligand_{k}" in row for k in keys):
+        return complex_obj
+
+    # Stored LIGAND-ONLY, deliberately not padded to the full complex here. Protein atoms are
+    # pruned (max_atom_dist) after this point, so any protein-side offset baked in now would
+    # go stale; UnifiedView right-aligns instead, which is invariant to that pruning.
+    complex_obj.atom_features = {key: np.asarray(row[f"ligand_{key}"]) for key in keys}
+    return complex_obj
 
 class ComplexDataset(Dataset):
     """
@@ -219,16 +263,102 @@ class ParquetDataset(Dataset):
         
         # Set up maximum atom distance for pruning how much of protein is voxelized
         self.max_atom_dist = config.get('max_atom_dist', config.box_dims[0])
-        
+
         # Set up LRU cache for parquet dataframes
         self.cache_size = cache_size
         self.df_cache = {}
         self.cache_order = []
-        
+
         # Set up parser for molecular data
         self.parser = MolecularParserWrapper()
         self.fail_counter = 0
         self.fail_threshold = 10
+
+        # Channel assignment is pure CPU work and the view is stateless, so build it once
+        # rather than reconstructing a throwaway config per __getitem__ as before.
+        self.view = UnifiedView(config)
+        self.cutoff_ratio = config.get('voxel_cutoff_ratio', 2.0)
+
+    def _build_complex(self, row):
+        """Build a MolecularComplex from a parquet row, in whichever format it uses.
+
+        Three layouts are supported, in descending order of how current they are:
+        raw coordinate arrays (HiQBind and Plinder as shipped), pickled `MolecularData`,
+        and embedded PDB/MOL blocks written to temporary files.
+        """
+        dtype = eval(self.config.dtype) if isinstance(self.config.dtype, str) else self.config.dtype
+
+        if 'protein_coords' in row and 'ligand_coords' in row:
+            # float32, NOT config.dtype. `config.dtype` specifies the OUTPUT GRID dtype
+            # (bfloat16); reusing it for input coordinates quantises them before the
+            # voxeliser -- which already computes in float32 precisely because bfloat16
+            # spacing at 28-92 A from the origin is 0.25-1.0 A, comparable to the 0.75 A
+            # voxel (§3b bug 3). Casting up afterwards cannot recover what was discarded,
+            # so this is what makes parquet_v2's float32 coordinates actually reach the grid.
+            # Cost is ~2.5 MB per batch of 128 against a 126 MB grid; grids stay bfloat16.
+            protein_coords = torch.tensor(row['protein_coords'], dtype=torch.float32).reshape(
+                list(row['protein_coords_shape'])
+            )
+            ligand_coords = torch.tensor(row['ligand_coords'], dtype=torch.float32).reshape(
+                list(row['ligand_coords_shape'])
+            )
+            complex_obj = MolecularComplex(
+                MolecularData(
+                    molecule_object=None,
+                    coords=protein_coords,
+                    element_symbols=row['protein_element_symbols'],
+                ),
+                MolecularData(
+                    molecule_object=None,
+                    coords=ligand_coords,
+                    element_symbols=row['ligand_element_symbols'],
+                ),
+            )
+            attach_atom_features(complex_obj, row, n_protein=protein_coords.shape[-1])
+            return complex_obj
+
+        if 'protein_data_serialized' in row and 'ligand_data_serialized' in row:
+            return MolecularComplex(
+                self._deserialize_molecular_data(row['protein_data_serialized']),
+                self._deserialize_molecular_data(row['ligand_data_serialized']),
+            )
+
+        # Fallback: the parquet carries the raw files, so round-trip them through disk.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            protein_path = os.path.join(temp_dir, "protein.pdb")
+            with open(protein_path, 'wb') as f:
+                f.write(row['pdb_content'])
+            ligand_path = os.path.join(temp_dir, "ligand.mol")
+            with open(ligand_path, 'wb') as f:
+                f.write(row['mol_block'])
+            # load only -- augmentation and pruning happen once, in _atom_record
+            return load_complex_from_files(protein_path, ligand_path, parser=self.parser)
+
+    def _atom_record(self, complex_obj):
+        """Apply the augmentations, then hand back a CPU-only atom record.
+
+        No voxel grid is built here -- see `src.data.common.voxelization.batched`. That is
+        what allows `num_workers > 0`, since the old path allocated on `cuda:0` inside the
+        worker regardless of rank.
+        """
+        if self.random_rotation:
+            assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, "Ligand center is not correct"
+            complex_obj = apply_random_rotation(complex_obj)
+            assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, "Ligand center is not correct"
+
+        if self.random_translation > 0:
+            complex_obj = apply_random_translation(complex_obj, self.random_translation)
+
+        if self.max_atom_dist is not None and self.max_atom_dist > 0:
+            assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() <= self.random_translation + 1, "Ligand center is not correct"
+            complex_obj = prune_distant_atoms(complex_obj, self.max_atom_dist)
+
+        return atom_record_from_complex(
+            complex_obj,
+            self.view,
+            box_dims=self.config.box_dims,
+            cutoff_ratio=self.cutoff_ratio,
+        )
 
     def _get_dataframe(self, file_idx):
         """Get dataframe from cache or load it."""
@@ -285,199 +415,16 @@ class ParquetDataset(Dataset):
 
         
         try:
-            # Check if we have the new format columns
-            dtype = eval(self.config.dtype) if isinstance(self.config.dtype, str) else self.config.dtype
-            if 'protein_coords' in row and 'ligand_coords' in row:
-                protein_coords = torch.tensor(row['protein_coords'], dtype=dtype).reshape(
-                    list(row['protein_coords_shape'])
-                    )
-                ligand_coords = torch.tensor(row['ligand_coords'], dtype=dtype).reshape(
-                    list(row['ligand_coords_shape'])
-                )
-                
-                protein_data = MolecularData(
-                    molecule_object=None,
-                    coords=protein_coords,
-                    element_symbols=row['protein_element_symbols']
-                )
-                
-                ligand_data = MolecularData(
-                    molecule_object=None,
-                    coords=ligand_coords,
-                    element_symbols=row['ligand_element_symbols']
-                )
-
-                # TODO see if we can remove this
-                temp_config = Poc2MolDataConfig(
-                    vox_size=self.config.vox_size,
-                    box_dims=self.config.box_dims,
-                    random_rotation=self.random_rotation,
-                    random_translation=self.random_translation,
-                    has_protein=self.config.has_protein,
-                    ligand_channel_names=self.config.ligand_channel_names,
-                    protein_channel_names=self.config.protein_channel_names,
-                    protein_channels=self.config.protein_channels,
-                    ligand_channels=self.config.ligand_channels,
-                    max_atom_dist=self.max_atom_dist,
-                    dtype=eval(self.config.dtype) if isinstance(self.config.dtype, str) else self.config.dtype
-                )
-                
-                # Create molecular complex
-                complex_obj = MolecularComplex(protein_data, ligand_data)
-                
-                # Apply transformations
-                if self.random_rotation:
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, "Ligand center is not correct"
-                    complex_obj = apply_random_rotation(complex_obj)
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, "Ligand center is not correct"
-                
-                if self.random_translation > 0:
-                    complex_obj = apply_random_translation(complex_obj, self.random_translation)
-                
-                if self.max_atom_dist is not None and self.max_atom_dist > 0:
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() <= self.random_translation + 1, "Ligand center is not correct"
-                    complex_obj = prune_distant_atoms(complex_obj, self.max_atom_dist)
-                
-                # Voxelize the complex
-                voxelizer = UnifiedVoxelGrid(temp_config)
-                voxel = voxelizer.voxelize(complex_obj)
-                
-                # Extract protein and ligand channels based on config
-                if temp_config.has_protein:
-                    protein_channels = len(temp_config.protein_channels)
-                    protein_voxel = voxel[:protein_channels]
-                    ligand_voxel = voxel[protein_channels:]
-                else:
-                    protein_voxel = None
-                    ligand_voxel = voxel
-                
-                self.fail_counter = 0
-                # Return the voxelized complex
-                return {
-                    'ligand': ligand_voxel,
-                    'protein': protein_voxel,
-                    'name': row['system_id'],
-                    'smiles': row['smiles'],
-                    'cluster': cluster_id,
-                    'load_time': load_time
-                }
-            
-            # Keep existing handling for old format as fallback
-            elif 'protein_data_serialized' in row and 'ligand_data_serialized' in row:
-                # Deserialize the data
-                protein_data = self._deserialize_molecular_data(row['protein_data_serialized'])
-                ligand_data = self._deserialize_molecular_data(row['ligand_data_serialized'])
-                
-                # Create a temporary config with the current instance's settings
-                temp_config = Poc2MolDataConfig(
-                    vox_size=self.config.vox_size,
-                    box_dims=self.config.box_dims,
-                    random_rotation=self.random_rotation,
-                    random_translation=self.random_translation,
-                    has_protein=self.config.has_protein,
-                    ligand_channel_names=self.config.ligand_channel_names,
-                    protein_channel_names=self.config.protein_channel_names,
-                    protein_channels=self.config.protein_channels,
-                    ligand_channels=self.config.ligand_channels,
-                    max_atom_dist=self.max_atom_dist,
-                    dtype=eval(self.config.dtype) if isinstance(self.config.dtype, str) else self.config.dtype
-                )
-                
-                # Create molecular complex
-                complex_obj = MolecularComplex(protein_data, ligand_data)
-                
-                # Apply transformations
-                if self.random_rotation:
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, "Ligand center is not correct"
-                    complex_obj = apply_random_rotation(complex_obj)
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() < 1, f"Ligand center is not correct: {complex_obj.ligand_data.coords.mean(axis=1)} {complex_obj.ligand_center}"
-                
-                if self.random_translation > 0:
-                    complex_obj = apply_random_translation(complex_obj, self.random_translation)
-                
-                if self.max_atom_dist is not None and self.max_atom_dist > 0:
-                    assert abs(complex_obj.ligand_data.coords.mean(axis=1) - complex_obj.ligand_center).max() <= self.random_translation + 1, "Ligand center is not correct"
-                    complex_obj = prune_distant_atoms(complex_obj, self.max_atom_dist)
-                
-                # Voxelize the complex
-                voxelizer = UnifiedVoxelGrid(temp_config)
-                voxel = voxelizer.voxelize(complex_obj)
-                
-                # Extract protein and ligand channels based on config
-                if temp_config.has_protein:
-                    protein_channels = len(temp_config.protein_channels)
-                    protein_voxel = voxel[:protein_channels]
-                    ligand_voxel = voxel[protein_channels:]
-                else:
-                    protein_voxel = None
-                    ligand_voxel = voxel
-                
-                self.fail_counter = 0
-                # Return the voxelized complex
-                return {
-                    'ligand': ligand_voxel,
-                    'protein': protein_voxel,
-                    'name': row['system_id'],
-                    'smiles': row['smiles'],
-                    'cluster': cluster_id,
-                    'load_time': load_time
-                }
-            
-            else:
-                # Fall back to using temporary files if preprocessed data is not available
-                # Get protein and ligand data
-                pdb_content = row['pdb_content']
-                mol_block = row['mol_block']
-                
-                # Create temporary files for the protein and ligand
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Write protein to PDB file
-                    protein_path = os.path.join(temp_dir, "protein.pdb")
-                    with open(protein_path, 'wb') as f:
-                        f.write(pdb_content)
-                    
-                    # Write ligand to MOL file
-                    ligand_path = os.path.join(temp_dir, "ligand.mol")
-                    with open(ligand_path, 'wb') as f:
-                        f.write(mol_block)
-                    
-                    # Create a temporary config with the current instance's settings
-                    temp_config = Poc2MolDataConfig(
-                        vox_size=self.config.vox_size,
-                        box_dims=self.config.box_dims,
-                        random_rotation=self.random_rotation,
-                        random_translation=self.random_translation,
-                        has_protein=self.config.has_protein,
-                        ligand_channel_names=self.config.ligand_channel_names,
-                        protein_channel_names=self.config.protein_channel_names,
-                        protein_channels=self.config.protein_channels,
-                        ligand_channels=self.config.ligand_channels,
-                        max_atom_dist=self.max_atom_dist,
-                        dtype=eval(self.config.dtype) if isinstance(self.config.dtype, str) else self.config.dtype
-                    )
-                    
-                    # Convert MOL to RDKit molecule
-                    ligand_mol = Chem.MolFromMolBlock(mol_block.decode())
-                    if ligand_mol is None:
-                        return self.__getitem__(np.random.randint(0, len(self)))
-                    
-                    if self.config.remove_hydrogens:
-                        ligand_mol = Chem.RemoveHs(ligand_mol)
-                    
-                    # Voxelize the complex
-                    protein_voxel, ligand_voxel, _ = voxelize_complex(protein_path, ligand_path, temp_config)
-                    
-                    # Return the voxelized complex
-                    self.fail_counter = 0
-                    return {
-                        'ligand': ligand_voxel,
-                        'protein': protein_voxel,
-                        'name': row['system_id'],
-                        'smiles': row['smiles'],
-                        'cluster': cluster_id,
-                        'load_time': load_time
-                    }
-                    
+            complex_obj = self._build_complex(row)
+            record = self._atom_record(complex_obj)
+            record.update({
+                'name': row['system_id'],
+                'smiles': row['smiles'],
+                'cluster': cluster_id,
+                'load_time': load_time,
+            })
+            self.fail_counter = 0
+            return record
         except Exception as e:
             print(f"Error processing sample {row['system_id']} from cluster {cluster_id}: {e}")
             # Return a random sample instead
@@ -548,22 +495,22 @@ class ParquetDataset(Dataset):
             'file_indices': file_indices
         }
         
-        with open(os.path.join(indices_dir, 'global_index.json'), 'w') as f:
-            json.dump(global_index, f, indent=2)
+        _atomic_write(os.path.join(indices_dir, 'global_index.json'),
+                      lambda f: json.dump(global_index, f, indent=2))
         
         # Save cluster-based indices
         cluster_index = {str(cluster_id): samples for cluster_id, samples in cluster_samples.items()}
         
-        with open(os.path.join(indices_dir, 'cluster_index.json'), 'w') as f:
-            json.dump(cluster_index, f, indent=2)
+        _atomic_write(os.path.join(indices_dir, 'cluster_index.json'),
+                      lambda f: json.dump(cluster_index, f, indent=2))
         
         # Save file mapping
         file_mapping = {
             i: os.path.relpath(file_path, self.data_path) for i, file_path in enumerate(parquet_files)
         }
         
-        with open(os.path.join(indices_dir, 'file_mapping.json'), 'w') as f:
-            json.dump(file_mapping, f, indent=2)
+        _atomic_write(os.path.join(indices_dir, 'file_mapping.json'),
+                      lambda f: json.dump(file_mapping, f, indent=2))
         
         # Generate summary
         summary = {
@@ -573,8 +520,8 @@ class ParquetDataset(Dataset):
             'clusters': {cluster: len(samples) for cluster, samples in cluster_samples.items()}
         }
         
-        with open(os.path.join(indices_dir, 'index_summary.json'), 'w') as f:
-            json.dump(summary, f, indent=2)
+        _atomic_write(os.path.join(indices_dir, 'index_summary.json'),
+                      lambda f: json.dump(summary, f, indent=2))
         
         print(f"Created indices with {len(all_samples)} total samples across {len(cluster_samples)} clusters")
         
@@ -609,8 +556,8 @@ class ParquetDataset(Dataset):
         }
         
         # Save file mapping
-        with open(os.path.join(indices_dir, 'file_mapping.json'), 'w') as f:
-            json.dump(file_mapping, f, indent=2)
+        _atomic_write(os.path.join(indices_dir, 'file_mapping.json'),
+                      lambda f: json.dump(file_mapping, f, indent=2))
         
         # Return file mapping with full paths
         return {int(k): os.path.join(data_path, v) for k, v in file_mapping.items()} 

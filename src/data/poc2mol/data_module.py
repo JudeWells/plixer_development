@@ -1,11 +1,12 @@
 from typing import Optional
 
 from lightning import LightningDataModule
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from src.data.common.voxelization.config import Poc2MolDataConfig
+from src.data.poc2mol.collate import VoxelBatchBuilder, collate_complex_records
 from src.data.poc2mol.datasets import ComplexDataset, DockstringTestDataset
-from torch.utils.data import Dataset
+
 
 class ComplexDataModule(LightningDataModule):
     """
@@ -21,6 +22,8 @@ class ComplexDataModule(LightningDataModule):
         train_dataset: Optional[Dataset] = None,
         val_dataset: Optional[Dataset] = None,
         test_dataset: Optional[Dataset] = None,
+        pin_memory: bool = True,
+        prefetch_factor: Optional[int] = 4,
     ):
         super().__init__()
         self.config = config
@@ -31,6 +34,15 @@ class ComplexDataModule(LightningDataModule):
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
+        self.pin_memory = pin_memory
+        self.prefetch_factor = prefetch_factor
+
+        # Datasets now emit CPU atom records; the grids are built on the rank's own device
+        # in on_after_batch_transfer. See src/data/poc2mol/collate.py for why.
+        self.batch_builder = VoxelBatchBuilder(
+            config,
+            n_protein_channels=len(config.protein_channels) if config.has_protein else 0,
+        )
 
     def setup(self, stage: Optional[str] = None):
         """Set up the datasets for each stage."""
@@ -42,9 +54,7 @@ class ComplexDataModule(LightningDataModule):
                     translation=self.config.random_translation,
                     rotate=self.config.random_rotation,
                 )
-            else:
-                self.train_dataset = self.train_dataset
-            
+
             if self.val_dataset is None:
                 self.val_dataset = ComplexDataset(
                     self.config,
@@ -52,9 +62,7 @@ class ComplexDataModule(LightningDataModule):
                     translation=0.0,  # No translation for validation
                     rotate=False,     # No rotation for validation
                 )
-            else:
-                self.val_dataset = self.val_dataset
-        
+
         if stage == 'test' or stage is None:
             if self.test_dataset is None:
                 self.test_dataset = ComplexDataset(
@@ -63,38 +71,37 @@ class ComplexDataModule(LightningDataModule):
                     translation=0.0,  # No translation for testing
                     rotate=False,     # No rotation for testing
                 )
-            else:
-                self.test_dataset = self.test_dataset
+
+    def on_after_batch_transfer(self, batch, dataloader_idx: int = 0):
+        """Voxelise on the device the batch has just been moved to."""
+        return self.batch_builder(batch)
+
+    def _loader(self, dataset, batch_size, shuffle, num_workers=None):
+        num_workers = self.num_workers if num_workers is None else num_workers
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            collate_fn=collate_complex_records,
+            pin_memory=self.pin_memory,
+            persistent_workers=num_workers > 0,
+            prefetch_factor=self.prefetch_factor if num_workers > 0 else None,
+            drop_last=shuffle,
+        )
 
     def train_dataloader(self):
         """Get the training data loader."""
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=False,
-            persistent_workers=True if self.num_workers > 0 else False,
-        )
+        return self._loader(self.train_dataset, self.config.batch_size, shuffle=True)
 
     def val_dataloader(self):
         """Get the validation data loader."""
-        return DataLoader(
-            self.val_dataset,
-            batch_size=min(4, self.config.batch_size),
-            shuffle=False,
-            num_workers=0,
-            pin_memory=False,
-            persistent_workers= False, #True if self.num_workers > 0 else False,
+        return self._loader(
+            self.val_dataset, min(4, self.config.batch_size), shuffle=False
         )
 
     def test_dataloader(self):
         """Get the test data loader."""
-        return DataLoader(
-            self.test_dataset,
-            batch_size=min(4, self.config.batch_size),
-            shuffle=False,
-            num_workers=0,
-            pin_memory=False,
-            persistent_workers=False,
-        ) 
+        return self._loader(
+            self.test_dataset, min(4, self.config.batch_size), shuffle=False
+        )

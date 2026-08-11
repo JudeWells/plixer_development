@@ -1,0 +1,62 @@
+# @package _global_
+# Experiment 1, BASELINE arm -- stage 1: ligand-only pretraining on ZINC.
+#
+# Ligand channels only, exactly as the published model. Paired with exp1_zinc_protein.yaml,
+# which differs ONLY in the protein channels; everything else -- data, steps, effective
+# batch, LR schedule, seed -- is held identical so the comparison is attributable.
+defaults:
+  - _self_
+  - override /data: vox2smiles_zinc_data
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_zinc_baseline"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "baseline"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_zinc"
+    job_type: "pretrain"
+    tags: ["exp1", "baseline", "zinc"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 16
+  inject_protein: false
+  config:
+    include_hydrogens: false
+    has_protein: false
+    batch_size: 64
+    target_samples_per_batch: 512
+
+model:
+  override_optimizer_on_load: false
+  visualise_val: false
+  config:
+    num_channels: 9
+    lr: 1e-4
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 2000
+      num_stable_steps: 400000
+      num_decay_steps: 400000
+      min_lr_ratio: 0.3
+      interval: "step"
+
+trainer:
+  val_check_interval: 6000

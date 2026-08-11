@@ -1,4 +1,9 @@
 _target_: src.models.vox2smiles.VoxToSmilesModel
+# Molecules generated per validation dataloader for the free-running metrics (validity,
+# exact match, Tanimoto). Declared here so a plain override works -- Hydra rejects a bare
+# override for a key absent from the config node. At 30 the binomial SE on exact match is
+# ~9 pp per rank, too noisy to read a trend; raise it for runs where those metrics matter.
+n_samples_for_validity_testing: 30
 config:
   hidden_size: 768
   num_hidden_layers: 8
@@ -15,6 +20,9 @@ config:
   qkv_bias: True
   encoder_stride: 2
   lr: 5e-5
+  # Declared so it is overridable and recorded. AdamW's default is 0.01, which is what every
+  # run before 2026-08-10 silently used.
+  weight_decay: 0.01
   torch_dtype: "bfloat16"
   scheduler:
     type: "warmup_stable_decay"  # Options: step, linear, cosine, cosine_with_restarts, etc.

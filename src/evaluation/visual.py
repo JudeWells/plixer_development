@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import wandb
+from lightning_utilities.core.rank_zero import rank_zero_only
 from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem import AllChem
@@ -235,7 +236,9 @@ def visualise_batch(lig, pred, names, angles=None, save_dir=None, batch='none', 
     combined_image_path = os.path.join(save_dir, f'batch_{batch}_visualisation.png')
     plt.savefig(combined_image_path)
     if log_wandb:
-        wandb.log({f'batch_{batch}_visualisation': wandb.Image(combined_image_path)})
+        # Only rank zero has a live wandb run; the other ranks would raise on wandb.log.
+        if rank_zero_only.rank == 0:
+            wandb.log({f'batch_{batch}_visualisation': wandb.Image(combined_image_path)})
     plt.close(fig)
 
 

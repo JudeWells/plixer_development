@@ -14,5 +14,9 @@ tags: ["dev"]
 train: True
 test: True
 optimized_metric: "val/loss"
-ckpt_path: null # over-ride this to resume training
+ckpt_path: null # over-ride this to RESUME training (restores step, optimizer, scheduler)
+# Load only the weights from a checkpoint and start a fresh run at step 0 with its own
+# schedule. This is what curriculum stages want (stage 1 -> 2 -> 3); ckpt_path is not,
+# because it would carry the previous stage's global_step and optimizer state across.
+init_weights_from: null
 seed: 42

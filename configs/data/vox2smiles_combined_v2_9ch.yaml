@@ -1,0 +1,87 @@
+# Stage-3 combined data, parquet_v2, 9-CHANNEL scheme.
+#
+# Pairs a 9-channel frozen Poc2Mol with a 9-channel decoder. The two MUST match: Poc2Mol
+# emits 9 ligand channels and the decoder's patch-embedding conv is built for 9 inputs.
+#
+# NO protein channels into the decoder -- CLAUDE.md §14a measured them making both
+# val/poc2mol/loss and likelihood_auc_znorm worse. data.config.has_protein stays TRUE because
+# that is what feeds the frozen Poc2Mol; inject_protein (set in the experiment) is what controls
+# whether the decoder sees them.
+_target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
+defaults:
+  - datasets@train_dataset.poc2mol_output_dataset.complex_dataset: complex_dataset_v2_9ch
+  - datasets@val_datasets.roc_auc_plinder.complex_dataset: complex_dataset_v2_9ch
+  - datasets@val_datasets.hiqbind_val.complex_dataset: complex_dataset_v2_9ch
+  - /model@poc2mol_model: poc2mol_frozen
+  - datasets@val_datasets.roc_auc_plinder.decoy_smiles_list: plinder_decoy_smiles
+  - datasets@val_datasets.roc_auc_plinder.complex_dataset.config.system_ids: plinder_system_ids
+  - _self_
+
+data_path: "../geom/rdkit_folder/drugs"
+num_workers: 14
+
+# v2 Poc2Mol, selected by best val/loss -- the rule the pipeline would actually ship.
+# ⚠️ CLAUDE.md §18h: for ch11 that rule picks a checkpoint ~0.012 BELOW its own peak
+# discrimination (0.7295 at ep576 vs 0.7414 at ep366, which top_k rotation deleted). A loss for
+# the 11ch arm is therefore partly attributable to checkpoint selection, not the channel scheme.
+poc2mol_ckpt_path: checkpoints/poc2mol_v2/poc2mol_v2_9ch_ep390.ckpt
+n_protein_channels: 4
+quality_filter: none
+max_poc2mol_loss: null
+
+poc2mol_model:
+  config:
+    out_channels: 9
+
+config:
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  batch_size: 64
+  val_batch_size: 200
+  secondary_val_batch_size: 50
+  max_smiles_len: 200
+  has_protein: true
+  include_hydrogens: false
+  # max only: the frozen Poc2Mol was trained on max-aggregated grids (CLAUDE.md §10b).
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  # ligand_channels left at the dataclass default = the original 9-channel map.
+
+train_dataset:
+  _target_: src.data.vox2smiles.datasets.CombinedDataset
+  prob_poc2mol: 0.5
+  max_poc2mol_loss: ${data.max_poc2mol_loss}
+  vox2smiles_dataset:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_train.csv
+    random_rotation: true
+    random_translation: 6.0
+    config: ${data.config}
+  poc2mol_output_dataset:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    decoy_smiles_list: null
+    include_decoys: false
+
+val_datasets:
+  roc_auc_plinder:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    include_decoys: True
+    complex_dataset:
+      use_cluster_member_zero: true
+      data_path: '../hiqbind/parquet_v2/test'
+  hiqbind_val:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    decoy_smiles_list: null
+    include_decoys: false
+    complex_dataset:
+      use_cluster_member_zero: true
+      data_path: ../hiqbind/parquet_v2/val
+  # Ligand-only control: detects the decoder trading away its ZINC ability for pocket
+  # performance. Same held-out 104,029 molecules as stage 1, deterministic.
+  zinc_val:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_val.csv
+    random_rotation: false
+    random_translation: 0.0
+    config: ${data.config}

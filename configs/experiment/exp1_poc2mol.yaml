@@ -1,0 +1,109 @@
+# @package _global_
+# Experiment 1 -- the SHARED Poc2Mol.
+#
+# One Poc2Mol is trained here and frozen for BOTH decoder arms. Its architecture is
+# untouched by the protein-channel intervention (protein voxels -> ligand voxels either
+# way), so sharing it removes a confound and halves the compute.
+#
+# This must be retrained rather than reusing checkpoints/poc_vox_to_mol_vox/epoch_173.ckpt:
+# that checkpoint was fitted to the pre-2026-08 channel encoding, whose protein channel 3
+# was "everything except sulfur" and whose HiQBind chlorine/bromine never populated their
+# own channels (CLAUDE.md §3b). Measured on val, it degrades from 0.816 to 0.968 when fed
+# the corrected channels.
+#
+# Goal for this run: train past the val-loss minimum so the overfitting point is visible,
+# then take the best checkpoint by val/loss.
+defaults:
+  - _self_
+  - override /data: poc2mol_hiqbind_data
+  - override /model: poc2mol
+  # One GPU per run, not DDP. At effective batch 128 an 8-way DDP run gives each rank only
+  # 16 samples, which starves an H100 (61 samples/s/rank vs 869 at batch 64) and buys just
+  # 1.3x over a single GPU. Running 8 configs in parallel, one per GPU, is 8x the
+  # information for the same wall clock. DDP still matters for the combined stage.
+  - override /trainer: default
+  - override /logger: wandb.yaml
+
+task_name: "exp1_poc2mol"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "shared_poc2mol"
+  - "lr${model.lr}"
+  - "wd${model.weight_decay}"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "poc2mol"
+    entity: "cath"
+    group: "exp1_poc2mol"
+    job_type: "train"
+    tags: ["exp1", "shared", "corrected_channels"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  # 128 cores / 8 ranks
+  num_workers: 16
+  config:
+    # 128 with accumulation 1, rather than 64 with accumulation 2 -- same effective batch,
+    # one fewer forward/backward per optimiser step. The first sweep (20260806_135055) ran
+    # at 64 and used only 14 GB of the 80 GB card; 128 roughly doubles that and is still
+    # comfortable. Note this does not fix the actual bottleneck: at ~300 samples/s against
+    # a model capable of 869, these runs are CPU-bound on parquet row extraction and
+    # element-symbol string matching, with voxelisation serialised in the main process.
+    batch_size: 128
+    # Effective batch per optimiser step. 128 is close to the ~127 the original run used
+    # (13572 steps / 173 epochs over 9872 clusters). src/train.py divides by world size, so
+    # this holds across any device count.
+    target_samples_per_batch: 128
+
+model:
+  override_optimizer_on_load: False
+  # Epochs are short here (9872 clusters), so per-epoch image dumps are pure overhead.
+  # Both off. Rendering validation voxel images through matplotlib every epoch dominated
+  # the epoch time -- a 2-epoch preflight took 5.6 min with it on, against a 26 s epoch
+  # without. Over 600 epochs x 8 runs it would swamp the sweep, and the W&B curves plus the
+  # saved checkpoints carry everything needed to judge these runs.
+  visualise_train: False
+  visualise_val: False
+  config:
+    in_channels: 4
+    out_channels: 9
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3
+    # save_last writes every epoch regardless of improvement; at 469 MB and 115 MB/s that
+    # is 4 s per run per epoch, and with 8 runs sharing the disk it would dominate. Since
+    # weights-only checkpoints cannot resume anyway, `last` buys little -- top_k writes
+    # only when val/loss improves, which becomes rare exactly when the run gets long.
+    save_last: False
+    filename: "epoch_{epoch:04d}_valloss_{val/loss:.4f}"
+    auto_insert_metric_name: False
+    # Weights only. A full checkpoint here is 1.4 GB -- AdamW's two fp32 moment buffers
+    # dominate -- and this disk writes at 115 MB/s, so each one costs 12.7 s against a 26 s
+    # epoch. With 8 runs sharing the disk that becomes the bottleneck rather than the GPUs.
+    # Weights alone are ~230 MB, and they are all that is needed: this Poc2Mol is consumed
+    # frozen by the decoder stage, which reads checkpoint["state_dict"].
+    # The trade-off is that a killed run restarts rather than resumes; at ~4 h that is the
+    # cheaper risk.
+    save_weights_only: True
+
+trainer:
+  devices: 1
+  # Validation every epoch: it costs ~0.3s against a ~26s epoch, and the whole point of
+  # this run is to resolve where val/loss turns.
+  check_val_every_n_epoch: 1
+  val_check_interval: null
+  max_epochs: 600

@@ -37,10 +37,31 @@ def load_complex_from_files(protein_path, ligand_path, parser=None):
     
 
 def apply_random_rotation(molecular_complex):
-    """Apply a random rotation to a molecular complex."""
-    rotation = RandomRotation()
+    """Apply a random rotation about the ligand centre, in the coordinates' own dtype.
+
+    docktgrid's RandomRotation builds its matrix in `docktgrid.config.DTYPE`, which our
+    site-packages patch sets to bfloat16 (CLAUDE.md §1). Now that coordinates are loaded in
+    float32 -- so that parquet_v2's precision actually reaches the grid -- that matmul raises
+    "expected m1 and m2 to have the same dtype". Building the matrix here in the coords' dtype
+    fixes it AND removes this path's dependence on the docktgrid patch, which does not survive
+    a venv rebuild.
+
+    Q from a QR of a Gaussian matrix, sign-corrected, is uniform over O(3); flipping a column
+    when the determinant is negative restricts it to SO(3), i.e. rotations without reflections.
+    """
+    coords = molecular_complex.coords
     n_atoms_ligand = molecular_complex.ligand_data.coords.shape[1]
-    rotation(molecular_complex.coords, molecular_complex.ligand_center)
+
+    gaussian = torch.randn(3, 3, dtype=torch.float64)
+    q, r = torch.linalg.qr(gaussian)
+    q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
+    if torch.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    rotation_matrix = q.to(coords.dtype)
+
+    centre = molecular_complex.ligand_center.to(coords.dtype).reshape(3, 1)
+    molecular_complex.coords = rotation_matrix @ (coords - centre) + centre
+    coords = molecular_complex.coords
     molecular_complex.ligand_data.coords = molecular_complex.coords[:, -n_atoms_ligand:]
     molecular_complex.protein_data.coords = molecular_complex.coords[:,:-n_atoms_ligand]
     molecular_complex.ligand_center = torch.mean(
@@ -153,31 +174,41 @@ def prepare_protein_ligand_complex(protein, ligand, config):
     return complex_obj
 
 
+def _voxelize_one(complex_obj, config):
+    """Voxelise a single prepared complex through the batched voxeliser.
+
+    These two entry points are what `inference/` and `evaluations/` call, so routing them
+    here is what keeps evaluation numerically consistent with training. The legacy
+    `UnifiedVoxelGrid` path voxelised in absolute PDB coordinates in bfloat16, which put
+    3.67% of occupied voxels more than 0.05 out (see CLAUDE.md §3b) -- evaluating a model
+    on data the model was never trained on.
+
+    Imported lazily: `batched` imports `voxelizer`, which imports this module.
+    """
+    from src.data.common.voxelization.batched import atom_record_from_complex, voxelize_records
+    from src.data.common.voxelization.voxelizer import UnifiedView
+
+    view = UnifiedView(config)
+    record = atom_record_from_complex(
+        complex_obj,
+        view,
+        box_dims=config.box_dims,
+        cutoff_ratio=config.get("voxel_cutoff_ratio", 2.0),
+    )
+    return voxelize_records([record], config)[0]
+
+
 def voxelize_molecule(mol, config):
     """Voxelize an RDKit molecule using the unified voxelizer."""
-    # Prepare the molecule
     molecular_complex = prepare_rdkit_molecule(mol, config)
-    
-    # Create the voxelizer
-    voxelizer = UnifiedVoxelGrid(config)
-    
-    # Voxelize the molecule
-    voxel = voxelizer.voxelize(molecular_complex)
-    
-    return voxel
+    return _voxelize_one(molecular_complex, config)
 
 
 def voxelize_complex(protein, ligand, config):
     """Voxelize a protein-ligand complex using the unified voxelizer."""
-    # Prepare the complex
     complex_obj = prepare_protein_ligand_complex(protein, ligand, config)
-    
-    # Create the voxelizer
-    voxelizer = UnifiedVoxelGrid(config)
-    
-    # Voxelize the complex
-    voxel = voxelizer.voxelize(complex_obj)
-    
+    voxel = _voxelize_one(complex_obj, config)
+
     # Extract protein and ligand channels based on config
     if config.has_protein:
         protein_channels = len(config.protein_channels)
@@ -186,5 +217,5 @@ def voxelize_complex(protein, ligand, config):
     else:
         protein_voxel = None
         ligand_voxel = voxel
-    
+
     return protein_voxel, ligand_voxel, complex_obj 

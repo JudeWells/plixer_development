@@ -1,0 +1,47 @@
+_target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
+data_path: "../geom/rdkit_folder/drugs"
+num_workers: 16
+# Experiment 1 knobs. inject_protein=false reproduces the published ligand-only decoder.
+inject_protein: false
+n_protein_channels: 4
+protein_mask_probability: 0.0
+config:
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  batch_size: 32
+  max_smiles_len: 200
+  has_protein: false
+  # Declared explicitly (rather than left to the dataclass default) so they can be set with
+  # a plain `data.config.voxel_aggregation=sum` override. Hydra rejects a bare override for
+  # a key absent from the config node, which is what silently killed the first attempt at
+  # the stage-1 production runs.
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  # ligand_channels / ligand_channel_names are left at the dataclass defaults, i.e. the
+  # ORIGINAL 9-channel map, to pair with configs/data/poc2mol_hiqbind_v2_9ch.yaml.
+  #
+  # So this config changes exactly ONE thing against the published stage-1 setup:
+  # coordinate precision. The stored coords were bfloat16-quantised to up to 0.49 A, ~2/3 of
+  # a 0.75 A voxel (CLAUDE.md §15c); parquet_v2 stores float32. Anything this arm gains over
+  # a v1 run is attributable to that alone, which is the control the 11-channel arm needs --
+  # without it, precision and the channel scheme are confounded.
+# Splits are preserved EXACTLY from v1: index_train.csv (5,477 files / 8,859,304 molecules)
+# and index_val.csv (60 files / 104,029 molecules) list the same file sets, verified
+# identical during regeneration. So v1 and v2 runs are directly comparable.
+train_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_train.csv
+  random_rotation: true
+  random_translation: 6.0
+  config: ${data.config}
+
+# Validation datasets
+val_datasets:
+  default_val:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_val.csv
+    # deterministic, for the same reason as the Poc2Mol val set (§3e)
+    random_rotation: false
+    random_translation: 0.0
+    config: ${data.config}

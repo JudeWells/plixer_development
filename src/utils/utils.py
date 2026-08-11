@@ -239,36 +239,54 @@ def get_center_from_ligand(ligand_path):
     return center
 
 def voxelize_protein(protein_pdb_path, center_coords, config: Poc2MolDataConfig):
+    """Voxelise a pocket for inference, centred on `center_coords`.
+
+    This is the entry point `inference/generate_smiles_from_pdb.py` uses, so it has to
+    produce grids identical to what training produced -- otherwise the model is served
+    inputs from a different distribution than it was fitted on. It therefore goes through
+    the same batched voxeliser as the datamodule; see CLAUDE.md §3b for what the legacy
+    `UnifiedVoxelGrid` path got wrong (uncentred bfloat16 coordinates, and a protein
+    channel 3 that held everything except sulfur).
+    """
+    from src.data.common.voxelization.batched import atom_record_from_complex, voxelize_records
+    from src.data.common.voxelization.config import resolve_dtype
+    from src.data.common.voxelization.voxelizer import UnifiedView
+
+    dtype = resolve_dtype(config.dtype)
+
     parser = MolecularParser()
     protein_data = parser.parse_file(protein_pdb_path, ext='.pdb')
-    
-    # Ensure protein data has the correct dtype
-    protein_data.coords = protein_data.coords.to(config.dtype)
+    protein_data.coords = protein_data.coords.to(dtype)
 
-    # Create a dummy ligand with one carbon atom at the center.
-    ligand_coords = torch.from_numpy(center_coords).unsqueeze(1).to(config.dtype)
+    # A single carbon at the requested centre stands in for the ligand: MolecularComplex
+    # derives the grid origin from the ligand centroid, and this is how the pocket location
+    # is communicated. It lands only in ligand channels, which are discarded below.
+    ligand_coords = torch.from_numpy(center_coords).unsqueeze(1).to(dtype)
     dummy_ligand_data = MolecularData(
         molecule_object=None,
         coords=ligand_coords,
         element_symbols=np.array(['C'])
     )
-    
+
     # The molparser is not used when MolecularData objects are passed.
     complex_obj = MolecularComplex(protein_file=protein_data, ligand_file=dummy_ligand_data, molparser=None)
-    
-    # Manually set the correct dtype for attributes that might have been created with a default dtype.
-    complex_obj.ligand_center = complex_obj.ligand_center.to(config.dtype)
-    complex_obj.coords = complex_obj.coords.to(config.dtype)
-    complex_obj.vdw_radii = complex_obj.vdw_radii.to(config.dtype)
 
-    voxelizer = UnifiedVoxelGrid(config)
-    voxel = voxelizer.voxelize(complex_obj)
-    
-    # Separate protein and ligand channels
+    # Manually set the correct dtype for attributes that might have been created with a default dtype.
+    complex_obj.ligand_center = complex_obj.ligand_center.to(dtype)
+    complex_obj.coords = complex_obj.coords.to(dtype)
+    complex_obj.vdw_radii = complex_obj.vdw_radii.to(dtype)
+
+    record = atom_record_from_complex(
+        complex_obj,
+        UnifiedView(config),
+        box_dims=config.box_dims,
+        cutoff_ratio=config.get('voxel_cutoff_ratio', 2.0),
+    )
+    voxel = voxelize_records([record], config)  # (1, C, X, Y, Z)
+
+    # Keep the protein channels; the dummy ligand carbon occupies the rest.
     protein_channels_count = len(config.protein_channels)
-    protein_voxel = voxel[:protein_channels_count]
-    
-    return protein_voxel.unsqueeze(0) # Add batch dimension
+    return voxel[:, :protein_channels_count]
     
 def mol2_center_parser(mol2_path):
     """

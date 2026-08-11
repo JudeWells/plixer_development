@@ -1,13 +1,29 @@
 _target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
 data_path: "../geom/rdkit_folder/drugs"
+num_workers: 16
+# Experiment 1 knobs. inject_protein=false reproduces the published ligand-only decoder.
+inject_protein: false
+n_protein_channels: 4
+protein_mask_probability: 0.0
 config:
   _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
   batch_size: 32
   max_smiles_len: 200
   has_protein: false
+  # Declared explicitly (rather than left to the dataclass default) so they can be set with
+  # a plain `data.config.voxel_aggregation=sum` override. Hydra rejects a bare override for
+  # a key absent from the config node, which is what silently killed the first attempt at
+  # the stage-1 production runs.
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+# Train and validation are split at FILE level (60 of 5537 parquet files held out, seeded
+# permutation). Previously both pointed at the same index.csv, so validation was drawn from
+# the training molecules and val/loss measured memorisation rather than generalisation --
+# useless as a convergence or early-stopping signal.
 train_dataset:
   _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
   data_path: ../zinc20_parquet
+  index_file: index_train.csv
   random_rotation: true
   random_translation: 6.0
   config: ${data.config}
@@ -17,6 +33,8 @@ val_datasets:
   default_val:
     _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
     data_path: ../zinc20_parquet
+    index_file: index_val.csv
+    # deterministic, for the same reason as the Poc2Mol val set (§3e)
     random_rotation: false
     random_translation: 0.0
     config: ${data.config}

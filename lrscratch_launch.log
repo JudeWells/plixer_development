@@ -1,0 +1,9 @@
+from-scratch LR sweep: logs/exp1_lr_scratch/20260807_123214
+  gpu0  lr=1e-4
+  gpu1  lr=2e-4
+  gpu2  lr=3e-4
+  gpu3  lr=5e-4
+  gpu4  lr=7e-4
+  gpu5  lr=1e-3
+  gpu6  lr=1.5e-3
+  gpu7  lr=2e-3

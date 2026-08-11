@@ -1,0 +1,84 @@
+# @package _global_
+# Stage 1 (ZINC ligand-only pretraining) on parquet_v2, ORIGINAL 9-channel ligand map.
+#
+# Pairs with exp1_zinc_v2_11ch.yaml, which differs ONLY in the channel scheme. Together
+# they mirror the Poc2Mol v2 A/B (poc2mol_hiqbind_v2_{9ch,11ch}), so whichever scheme wins
+# upstream has a matching stage-1 decoder ready -- the encoder's patch-embedding conv width
+# is set by the channel count, so a stage-1 checkpoint cannot be reused across schemes.
+#
+# This arm is the CONTROL for coordinate precision: it changes only the float32 coords
+# against the published stage-1 setup, so the 11-channel arm's gain (or lack of one) is
+# separable from what the precision fix alone buys.
+#
+# NO protein channels -- CLAUDE.md §14a measured them making both val/poc2mol/loss and
+# likelihood_auc_znorm worse, and the decision there was to drop them.
+defaults:
+  - _self_
+  - override /data: vox2smiles_zinc_v2_9ch
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_zinc_v2_9ch"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "v2"
+  - "9ch"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_zinc_v2"
+    job_type: "pretrain"
+    tags: ["exp1", "v2", "9ch", "zinc"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 14
+  inject_protein: false
+  config:
+    include_hydrogens: false
+    has_protein: false
+    # 128/GPU x 4 GPUs x accumulation 1 = effective batch 512, matching the §9c production
+    # runs so the curves overlay on the step axis.
+    batch_size: 128
+    target_samples_per_batch: 512
+
+model:
+  override_optimizer_on_load: false
+  visualise_val: false
+  config:
+    num_channels: 9
+    # Schedule copied verbatim from the §9c production runs (which reached val/loss 0.019
+    # and 63% whole-SMILES exact match), so this is a data change against a known-good
+    # recipe rather than two changes at once. min_lr_ratio 0.03 because §9b found the loss
+    # still falling at the lowest LR sampled.
+    lr: 3e-4
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 2000
+      num_stable_steps: 298000
+      num_decay_steps: 200000
+      min_lr_ratio: 0.03
+      interval: "step"
+
+trainer:
+  max_steps: 500000
+  val_check_interval: 5000
+
+callbacks:
+  model_checkpoint:
+    # Full optimiser state, not weights-only: §9b showed a weights-only resume (no Adam
+    # state) is what produced the lossy 0.195 -> 0.52 excursion.
+    save_weights_only: False

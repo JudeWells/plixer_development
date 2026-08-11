@@ -16,11 +16,25 @@ import io
 from PIL import Image, ImageDraw, ImageFont
 from src.models.modeling_vit_3d import ViTModel3D
 from src.data.common.tokenizers.smiles_tokenizer import build_smiles_tokenizer
-from src.utils.metrics import accuracy_from_outputs, calculate_validity, calculate_novelty, calculate_uniqueness
-from sklearn.metrics import roc_auc_score
+from src.utils.metrics import (
+    accuracy_from_outputs,
+    calculate_validity,
+    calculate_novelty,
+    calculate_uniqueness,
+    calculate_exact_match,
+    calculate_paired_similarity,
+    _blocked_rdkit_logs,
+)
+from src.utils.likelihood_eval import evaluate_likelihood_ranking
 
 
 class VoxToSmilesModel(LightningModule):
+    # "combined" is the pool of the other two, not a third dataset.
+    VAL_SPLITS = ("zinc", "poc2mol", "combined")
+    # loss/accuracy are teacher-forced; validity/exact_match/tanimoto come from free-running
+    # generation and are the ones that actually reflect deployed behaviour.
+    VAL_METRICS = ("loss", "accuracy", "validity", "exact_match", "tanimoto")
+
     def __init__(
         self,
         config,
@@ -53,20 +67,40 @@ class VoxToSmilesModel(LightningModule):
             torch_dtype=config.torch_dtype,
         )
 
+        # These must be the tokens the model is actually TRAINED on. They previously pointed
+        # at [CLS]=1 and [SEP]=4, while training uses [BOS]=2 and [EOS]=3 -- so `generate`
+        # waited for a [SEP] the model never emits, ran to max_length=200 every time, and
+        # appended garbage after a perfectly good SMILES. Truncating at the real [EOS]
+        # recovered a valid molecule in every sample checked, so this depressed validity,
+        # uniqueness and novelty across training, inference and evaluation alike.
+        # The loss path masks labels itself and never reads these, so training was unaffected
+        # and no retraining is needed: the config is rebuilt from the tokenizer on load, which
+        # repairs existing checkpoints retroactively.
         gpt2_config = GPT2Config(
-            bos_token_id=self.tokenizer.cls_token_id,
-            eos_token_id=self.tokenizer.sep_token_id,
+            bos_token_id=self.tokenizer.bos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
             vocab_size=len(self.tokenizer),
             pad_token_id=self.tokenizer.pad_token_id
         )
 
-        encoder = ViTModel3D(vit_config)
+        # add_pooling_layer=False: VisionEncoderDecoderModel consumes the encoder's
+        # last_hidden_state and never touches pooler_output, so a pooler's weights would
+        # receive no gradient. Under DDP that is a hard error ("expected to have finished
+        # reduction ... marking parameters ready only once"), avoidable otherwise only by
+        # find_unused_parameters=True, which costs a full extra parameter sweep per step.
+        # The pooler was dead weight before, so dropping it changes no computation.
+        encoder = ViTModel3D(vit_config, add_pooling_layer=False)
         
+        # pad_token_id was [EOS]=3 here, which made `generate` treat the real end token as
+        # padding. It also feeds shift_tokens_right, which fills -100 label positions with
+        # pad -- harmless either way since decoder_attention_mask already zeroes them, so
+        # correcting it does not perturb training.
         encoder_decoder_config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
             encoder_config=vit_config,
             decoder_config=gpt2_config,
             decoder_start_token_id=self.tokenizer.bos_token_id,
-            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            pad_token_id=self.tokenizer.pad_token_id,
         )
 
         self.model = VisionEncoderDecoderModel(config=encoder_decoder_config, encoder=encoder)
@@ -77,18 +111,31 @@ class VoxToSmilesModel(LightningModule):
                 self.model = self.model.to(vit_config.torch_dtype)
         self.criterion = torch.nn.CrossEntropyLoss()
         self.train_loss = MeanMetric()
-        self.val_loss = MeanMetric()
-        self.val_acc = MeanMetric()
-        self.val_loss_poc2mol_output = MeanMetric()
-        self.val_acc_poc2mol_output = MeanMetric()
         self.test_loss = MeanMetric()
         self.test_acc = MeanMetric()
+
+        # Validation is reported three ways so the two failure modes of the combined stage
+        # are separable:
+        #   zinc     -- ligand-only, ground-truth voxels. Detects catastrophic forgetting of
+        #               the pretraining task while the model adapts to pockets.
+        #   poc2mol  -- complexes conditioned on Poc2Mol's PREDICTED density. The deployed
+        #               condition, and the thing the whole pipeline is judged on.
+        #   combined -- the two pooled, i.e. the training distribution.
+        # A single averaged number hides the trade-off entirely: the model can buy pocket
+        # performance with ZINC ability and the combined metric barely moves.
+        self.val_metrics = torch.nn.ModuleDict({
+            f"{split}__{metric}": MeanMetric()
+            for split in self.VAL_SPLITS
+            for metric in self.VAL_METRICS
+        })
 
         self.override_optimizer_on_load = override_optimizer_on_load
         self.train_sample_counter = 0
         self.train_poc2mol_sample_counter = 0
-        self.val_validity = MeanMetric()
-        self.val_validity_poc2mol_output = MeanMetric()
+        # Accumulates the pocket x candidate likelihood matrix across the validation epoch.
+        # It cannot be computed per batch: z-normalising a ligand's score needs that ligand
+        # scored against MANY pockets, so the whole matrix has to exist first.
+        self._likelihood_rows = []
         self.visualise_val = visualise_val
         self.n_samples_for_validity_testing = n_samples_for_validity_testing
 
@@ -135,108 +182,249 @@ class VoxToSmilesModel(LightningModule):
                 self.log("train/poc2mol_accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, batch_size=len(labels))
             self.log("train/n_poc2mol_samples", self.train_poc2mol_sample_counter, on_step=True, on_epoch=True, prog_bar=True, batch_size=len(batch['pixel_values']))
             if elements_with_loss_mask.any():
-                self.log("train/poc2mol_loss", batch['poc2mol_loss'][elements_with_loss_mask].mean(), on_step=True, on_epoch=True, prog_bar=True, batch_size=elements_with_loss_mask.int().sum())
+                # VOXEL reconstruction quality of the frozen upstream (BCEDice between its
+                # predicted ligand density and the true grid) -- NOT a language-modelling
+                # loss. Named explicitly because `train/poc2mol_loss` sitting beside
+                # `val/poc2mol/loss`, which IS a cross-entropy, was thoroughly confusing.
+                # Scale check: this lives at ~0.80 against Poc2Mol's own 0.8039 and its
+                # 0.6403 floor, while the decoder's CE is ~0.05.
+                self.log("train/poc2mol_voxel_loss", batch['poc2mol_loss'][elements_with_loss_mask].mean(), on_step=True, on_epoch=True, prog_bar=True, batch_size=elements_with_loss_mask.int().sum())
+
+        self._log_train_lm_loss_by_source(batch, outputs, labels)
         return loss
 
+    def _log_train_lm_loss_by_source(self, batch, outputs, labels):
+        """Language-modelling loss on the TRAINING data, split by where the sample came from.
+
+        `val/poc2mol/loss` rising while `val/zinc/loss` falls is consistent with two very
+        different stories: the decoder overfitting the small complex set, or it simply failing
+        to learn the pocket task at all. Those are distinguished by the TRAINING loss on the
+        same distribution -- if train/poc2mol_pred falls while val/poc2mol rises, it is
+        memorisation; if both rise, the task itself is regressing.
+
+        Three groups, because during the ramp a complex row may supply either ligand density:
+          zinc         -- no pocket at all
+          poc2mol_true -- pocket, ground-truth ligand voxels
+          poc2mol_pred -- pocket, Poc2Mol's predicted density. Directly comparable to
+                          val/poc2mol/loss, which always uses the prediction.
+        """
+        has_pocket = batch.get("has_pocket")
+        if has_pocket is None:
+            return
+
+        with torch.no_grad():
+            masked = labels.clone()
+            masked[masked == self.tokenizer.pad_token_id] = -100
+            # Same alignment as everywhere else: HF shifts decoder inputs internally, so
+            # logits[:, i] predicts labels[:, i]; slice both from 1 to skip the BOS position.
+            shift_logits = outputs.logits[:, 1:, :].float()
+            shift_labels = masked[:, 1:]
+            per_token = torch.nn.functional.cross_entropy(
+                shift_logits.reshape(-1, shift_logits.size(-1)),
+                shift_labels.reshape(-1),
+                reduction="none",
+                ignore_index=-100,
+            ).view(shift_labels.shape)
+            keep = shift_labels != -100
+            per_sample = (per_token * keep).sum(1) / keep.sum(1).clamp(min=1)
+
+            has_pocket = has_pocket.to(per_sample.device).bool()
+            poc2mol_loss = batch.get("poc2mol_loss")
+            used_prediction = (
+                (poc2mol_loss > 0).to(per_sample.device)
+                if poc2mol_loss is not None
+                else torch.zeros_like(has_pocket)
+            )
+            groups = {
+                "zinc": ~has_pocket,
+                "poc2mol_true": has_pocket & ~used_prediction,
+                "poc2mol_pred": has_pocket & used_prediction,
+            }
+            for name, mask in groups.items():
+                n = int(mask.sum())
+                if n:
+                    self.log(f"train/{name}/lm_loss", per_sample[mask].mean(),
+                             on_step=True, on_epoch=False, batch_size=n)
+
+    # ------------------------------------------------------------------ validation
+
+    def _val_split(self, dataloader_idx: int) -> str:
+        """Which reporting split this validation dataloader belongs to.
+
+        Read off the datamodule rather than inferred from dataloader_idx, so reordering or
+        adding a val dataset cannot silently relabel the metrics.
+        """
+        datamodule = getattr(self.trainer, "datamodule", None)
+        kinds = getattr(datamodule, "val_dataset_kinds", None)
+        if kinds and dataloader_idx < len(kinds):
+            return kinds[dataloader_idx]
+        return "poc2mol"
+
+    def _update_val(self, metric: str, split: str, value, weight: int = 1):
+        """Update the split's metric and the pooled 'combined' one from a single value."""
+        if value is None:
+            return
+        if isinstance(value, float) and np.isnan(value):
+            return
+        for key in (split, "combined"):
+            name = f"{key}__{metric}"
+            if name in self.val_metrics:
+                self.val_metrics[name].update(value, weight=weight)
+
+    def on_validation_epoch_start(self):
+        self._likelihood_rows = []
+
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        split = self._val_split(dataloader_idx)
         pixel_values = batch["pixel_values"]
         labels = batch["input_ids"]
         masked_labels = labels.clone()
         masked_labels[masked_labels == self.tokenizer.pad_token_id] = -100
+
         outputs = self(pixel_values, labels=masked_labels)
         loss = outputs.loss
         with torch.no_grad():
             accuracy = accuracy_from_outputs(outputs, masked_labels, start_ix=1, ignore_index=-100)
-        if dataloader_idx == 0:
-            self.val_loss(loss)
-            self.log(f"val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
-            self.val_acc(accuracy)
-            self.log(f"val/accuracy", self.val_acc, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
-        else:
-            self.val_loss_poc2mol_output(loss)
-            self.log(f"val/poc2mol_output/loss", self.val_loss_poc2mol_output, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
-            self.val_acc_poc2mol_output(accuracy)
-            self.log(f"val/poc2mol_output/accuracy", self.val_acc_poc2mol_output, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
-        if batch_idx == 0 or batch_idx * len(batch['pixel_values']) < self.n_samples_for_validity_testing:
-            generated_smiles = self.generate_smiles(pixel_values[:self.n_samples_for_validity_testing], max_attempts=1)
+
+        n = pixel_values.size(0)
+        self._update_val("loss", split, loss.detach(), weight=n)
+        self._update_val("accuracy", split, accuracy, weight=n)
+
+        # ---- free-running generation metrics -------------------------------------
+        # Teacher-forced loss/accuracy saturate and say little about deployed behaviour;
+        # these three come from actually sampling the molecule. All are computed from ONE
+        # generate call, so the cost is a single decode of n_samples_for_validity_testing.
+        if batch_idx == 0 or batch_idx * n < self.n_samples_for_validity_testing:
+            generated_smiles = self.generate_smiles(
+                pixel_values[:self.n_samples_for_validity_testing], max_attempts=1
+            )
             if len(generated_smiles) > 0:
-                validity = calculate_validity(generated_smiles)
-                if isinstance(validity, (int, float)) and not np.isnan(validity):
-                    if dataloader_idx == 0:
-                        self.val_validity(validity)
-                        self.log(
-                            "val/validity",
-                            self.val_validity,
-                            on_step=False,
-                            on_epoch=True,
-                            add_dataloader_idx=False,
-                            batch_size=len(generated_smiles)
-                        )
-                    else:
-                        self.val_validity_poc2mol_output(validity)
-                        self.log(
-                            "val/poc2mol_output/validity",
-                            self.val_validity_poc2mol_output,
-                            on_step=False,
-                            on_epoch=True,
-                            add_dataloader_idx=False,
-                            batch_size=len(generated_smiles)
-                        )
+                reference_smiles = [
+                    sm.replace(" ", "")
+                    for sm in self.tokenizer.batch_decode(
+                        labels[:len(generated_smiles)], skip_special_tokens=True
+                    )
+                ]
+                m = len(generated_smiles)
+                self._update_val("validity", split, calculate_validity(generated_smiles), weight=m)
+                self._update_val("exact_match", split,
+                                 calculate_exact_match(generated_smiles, reference_smiles), weight=m)
+                # Mean Morgan-Tanimoto of the generated molecule to the TRUE ligand. Unlike
+                # exact match this degrades gracefully -- it still moves when the model is
+                # close but not identical, which is the regime stage 3 will live in.
+                self._update_val("tanimoto", split,
+                                 calculate_paired_similarity(generated_smiles, reference_smiles),
+                                 weight=m)
+
         if batch_idx < 3 and self.visualise_val:
             try:
-                if dataloader_idx == 0:
-                    sample_str = ""
-                else:
-                    sample_str = "poc2mol_output "
+                sample_str = "" if split == "zinc" else "poc2mol_output "
                 self.visualize_smiles(batch, sample_str=sample_str)
             except Exception as e:
                 print("Error visualizing smiles: ", e)
 
-        # ----------------------------------------------------------
-        # Decoy-based AUROC evaluation when candidate tokens provided
-        # ----------------------------------------------------------
+        # ---- likelihood ranking against a shared decoy panel ----------------------
+        # Only accumulated here; the AUC needs the whole pocket x candidate matrix, which
+        # does not exist until the epoch ends (see src/utils/likelihood_eval.py).
         if "candidate_tokens" in batch and "binder_indices" in batch:
-            candidate_tokens = batch["candidate_tokens"]  # dict of stacked tensors (N,L)
-            binder_indices = batch["binder_indices"]      # (B,)
+            self._accumulate_likelihood_rows(batch, pixel_values)
 
-            cand_ids = candidate_tokens["input_ids"].to(pixel_values.device)  # (N,L)
-            pad_id = self.tokenizer.pad_token_id
-
-            N = cand_ids.size(0)
-            for i in range(pixel_values.size(0)):
-                lv = pixel_values[i : i + 1]  # (1,C,D,H,W)
-                vox_batch = lv.repeat(N, 1, 1, 1, 1)  # (N,C,D,H,W)
-                with torch.no_grad():
-                    outputs_full = self(vox_batch, labels=cand_ids)
-                    logits = outputs_full.logits  # (N,L,vocab)
-
-                    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-
-                    masked_labels = cand_ids.clone()
-                    masked_labels[masked_labels == pad_id] = -100
-
-                    gather_idx = masked_labels.clone()
-                    gather_idx[gather_idx == -100] = 0
-                    token_log_probs = log_probs.gather(-1, gather_idx.unsqueeze(-1)).squeeze(-1)
-
-                    valid_mask = masked_labels != -100
-                    token_log_probs = token_log_probs * valid_mask
-                    seq_len = valid_mask.sum(dim=1).clamp(min=1)
-                    sample_ll = (token_log_probs.sum(dim=1) / seq_len).detach().cpu().numpy()  # (N,)
-
-                    true_ix = binder_indices[i].item()
-                    labels_vec = np.zeros(N)
-                    labels_vec[true_ix] = 1
-
-                    try:
-                        auc_val = roc_auc_score(labels_vec, sample_ll)
-                        self.log("val/decoy_roc_auc", auc_val, on_step=False, on_epoch=True, prog_bar=True)
-
-                        rank_of_hit = int(np.where((-sample_ll).argsort() == true_ix)[0])
-                        self.log("val/hit_rank_among_decoys", rank_of_hit, on_step=False, on_epoch=True)
-                    except ValueError:
-                        pass
         return loss
+
+    def _accumulate_likelihood_rows(self, batch, pixel_values):
+        """Score every candidate under every pocket in this batch; stash the rows."""
+        cand_ids = batch["candidate_tokens"]["input_ids"].to(pixel_values.device)
+        binder_indices = batch["binder_indices"]
+        pad_id = self.tokenizer.pad_token_id
+        n_candidates = cand_ids.size(0)
+
+        masked = cand_ids.clone()
+        masked[masked == pad_id] = -100
+        gather_idx = masked.clone()
+        gather_idx[gather_idx == -100] = 0
+        valid = masked != -100
+        seq_len = valid.sum(dim=1).clamp(min=1)
+
+        with torch.no_grad():
+            for i in range(pixel_values.size(0)):
+                repeated = pixel_values[i: i + 1].repeat(
+                    n_candidates, *([1] * (pixel_values.dim() - 1))
+                )
+                logits = self(repeated, labels=cand_ids).logits
+                log_probs = torch.nn.functional.log_softmax(logits.float(), dim=-1)
+                token_lp = log_probs.gather(-1, gather_idx.unsqueeze(-1)).squeeze(-1) * valid
+                # Mean per-token, matching the published convention. This is exactly the
+                # quantity that carries the ligand-size nuisance the z-norm removes.
+                row = (token_lp.sum(dim=1) / seq_len).detach().cpu().numpy()
+                self._likelihood_rows.append((row, int(binder_indices[i].item())))
+
+    def on_validation_epoch_end(self):
+        # Log every accumulated metric here rather than inside validation_step: the
+        # "combined" pool is fed from several dataloaders, and logging one key from more
+        # than one dataloader_idx inside the step is what Lightning rejects.
+        for split in self.VAL_SPLITS:
+            for metric in self.VAL_METRICS:
+                meter = self.val_metrics[f"{split}__{metric}"]
+                if meter.update_count == 0:
+                    continue
+                value = meter.compute()
+                self.log(f"val/{split}/{metric}", value, prog_bar=(metric in ("loss", "exact_match")))
+                # val/loss is what ModelCheckpoint and early stopping monitor. Point it at
+                # the pooled figure so selection reflects the training distribution.
+                if split == "combined" and metric == "loss":
+                    self.log("val/loss", value, prog_bar=True)
+                meter.reset()
+
+        self._log_likelihood_metrics()
+
+    def _log_likelihood_metrics(self):
+        rows = self._gather_likelihood_rows()
+        self._likelihood_rows = []
+        if not rows:
+            return
+
+        scores = np.stack([r for r, _ in rows])
+        smiles = self._candidate_smiles()
+        positive = np.zeros_like(scores, dtype=bool)
+        for row_ix, (_, binder_ix) in enumerate(rows):
+            if smiles is not None:
+                # Match positives by SMILES identity, not index: duplicate SMILES in the
+                # panel would otherwise be scored as misses (CLAUDE.md 5.1).
+                target = smiles[binder_ix] if binder_ix < len(smiles) else None
+                if target is not None:
+                    positive[row_ix] = np.array([s == target for s in smiles])
+                    continue
+            positive[row_ix, binder_ix] = True
+
+        valid_columns = None
+        if smiles is not None:
+            with _blocked_rdkit_logs():
+                valid_columns = np.array([Chem.MolFromSmiles(s) is not None for s in smiles])
+
+        for name, value in evaluate_likelihood_ranking(scores, positive, valid_columns).items():
+            if value is not None and not (isinstance(value, float) and np.isnan(value)):
+                self.log(f"val/{name}", value, prog_bar=(name == "likelihood_auc_znorm"),
+                         rank_zero_only=True)
+
+    def _gather_likelihood_rows(self):
+        """Collect every rank's rows. Each rank validates a different shard of pockets, so
+        without this the matrix would be a quarter of its size and the z-norm correspondingly
+        noisier."""
+        rows = self._likelihood_rows
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return rows
+        gathered = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(gathered, rows)
+        return [item for shard in gathered if shard for item in shard]
+
+    def _candidate_smiles(self):
+        """The shared decoy panel, in candidate order, if any val dataset carries one."""
+        datamodule = getattr(self.trainer, "datamodule", None)
+        for dataset in (getattr(datamodule, "val_datasets", {}) or {}).values():
+            panel = getattr(dataset, "decoy_smiles_list", None)
+            if panel:
+                return list(panel)
+        return None
 
     def test_step(self, batch, batch_idx):
         pixel_values = batch["pixel_values"]
@@ -244,17 +432,24 @@ class VoxToSmilesModel(LightningModule):
         outputs = self(pixel_values, labels=labels)
         loss = outputs.loss
         self.test_loss(loss)
-        self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         masked_labels = labels.clone()
         masked_labels[masked_labels == self.tokenizer.pad_token_id] = -100
         with torch.no_grad():
             accuracy = accuracy_from_outputs(outputs, masked_labels, start_ix=1, ignore_index=-100)
         self.test_acc(accuracy)
-        self.log("test/accuracy", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/accuracy", self.test_acc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.config.lr)
+        # weight_decay was never passed, so every run so far has used AdamW's 0.01 default --
+        # i.e. it was never a deliberate choice. With 172.7M parameters over 9,872 HiQBind
+        # clusters (~17,500 params per cluster) it is one of the few regularisation knobs that
+        # costs nothing to turn, so it is now explicit and sweepable.
+        weight_decay = float(getattr(self.hparams.config, "weight_decay", 0.01))
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams.config.lr, weight_decay=weight_decay
+        )
         
         # Get scheduler configuration from config
         scheduler_config = getattr(self.hparams.config, "scheduler", {})
@@ -337,8 +532,12 @@ class VoxToSmilesModel(LightningModule):
     
 
     def is_valid_smiles(self, smiles):
+        # Called once per generated sample inside generate_smiles. Without the log block an
+        # untrained decoder emits a multi-line RDKit parse error for every sample of every
+        # validation, which buries anything real in the training log.
         try:
-            mol = Chem.MolFromSmiles(smiles)
+            with _blocked_rdkit_logs():
+                mol = Chem.MolFromSmiles(smiles)
             if mol is not None:
                 return True
             else:
@@ -438,7 +637,8 @@ class VoxToSmilesModel(LightningModule):
             if actual_img:
                 images_to_log.append(wandb.Image(actual_img, caption=f"Sample {i} {sample_str}Actual"))
 
-        if images_to_log:
+        # Only rank zero has a live wandb run; the other ranks would raise on wandb.log.
+        if images_to_log and self.trainer.is_global_zero:
             wandb.log({"SMILES Comparison": images_to_log})
             for img in images_to_log:
                 if hasattr(img, "image") and hasattr(img.image, "close"):

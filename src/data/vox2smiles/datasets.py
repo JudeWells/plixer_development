@@ -9,25 +9,94 @@ from transformers import DataCollatorWithPadding
 
 from src.data.common.tokenizers.smiles_tokenizer import build_smiles_tokenizer
 from src.data.common.voxelization.config import Vox2SmilesDataConfig
+from src.data.common.voxelization.batched import atom_record_from_complex, collate_voxel_inputs
+from src.data.common.voxelization.voxelizer import (
+    UnifiedView,
+    RDkitMolecularComplex,
+    StoredLigandComplex,
+)
 from src.data.common.voxelization.molecule_utils import (
     load_mol_from_pickle,
     prepare_rdkit_molecule,
+    apply_random_rotation,
+    apply_random_translation,
+    prune_distant_atoms,
     voxelize_molecule
 )
+
+# Per-atom feature columns written by scripts/regenerate_zinc_parquet.py, and the marker
+# that a row is parquet_v2 at all.
+_V2_FEATURE_KEYS = ("is_aromatic", "n_hydrogens", "is_acceptor", "formal_charge")
+
+
+def molecule_atom_record(mol, voxel_config, view: UnifiedView) -> dict:
+    """CPU atom record for a standalone RDKit molecule (the ligand-only path)."""
+    complex_obj = prepare_rdkit_molecule(mol, voxel_config)
+    return atom_record_from_complex(
+        complex_obj,
+        view,
+        box_dims=voxel_config.box_dims,
+        cutoff_ratio=voxel_config.get("voxel_cutoff_ratio", 2.0),
+    )
+
+
+def stored_molecule_atom_record(row, voxel_config, view: UnifiedView) -> dict:
+    """CPU atom record from parquet_v2's stored arrays -- the RDKit-free ligand path.
+
+    Mirrors ``prepare_rdkit_molecule`` -> ``atom_record_from_complex`` exactly, including the
+    order of augmentations, so v2 records are drop-in interchangeable with v1 ones. The only
+    behavioural differences come from the data: float32 coordinates instead of
+    bfloat16-quantised ones, and per-atom features so the 11-channel scheme resolves.
+
+    Hydrogens are left in place rather than honouring ``include_hydrogens``. They are stored
+    (regeneration used ``removeHs=False``, mirroring HiQBind) but belong to no channel -- the
+    catch-all enumerates H and is inverted -- so ``atom_record_from_complex`` drops them via
+    its ``keep`` mask. Stripping them here would change nothing except the work done.
+    """
+    # np.array (a copy), not np.asarray: parquet-backed arrays are read-only, and a tensor
+    # aliasing one would be a silent in-place-write hazard for any future transform.
+    coords = torch.from_numpy(
+        np.array(row["ligand_coords"], dtype=np.float32)
+    ).reshape(list(row["ligand_coords_shape"]))
+
+    features = {
+        key: np.asarray(row[f"ligand_{key}"])
+        for key in _V2_FEATURE_KEYS
+        if f"ligand_{key}" in row
+    }
+    complex_obj = StoredLigandComplex(coords, row["ligand_element_symbols"], features)
+
+    if voxel_config.random_rotation:
+        complex_obj = apply_random_rotation(complex_obj)
+    if voxel_config.random_translation > 0:
+        complex_obj = apply_random_translation(complex_obj, voxel_config.random_translation)
+    if voxel_config.max_atom_dist is not None and voxel_config.max_atom_dist > 0:
+        complex_obj = prune_distant_atoms(
+            complex_obj, voxel_config.max_atom_dist, voxel_config.has_protein
+        )
+
+    return atom_record_from_complex(
+        complex_obj,
+        view,
+        box_dims=voxel_config.box_dims,
+        cutoff_ratio=voxel_config.get("voxel_cutoff_ratio", 2.0),
+    )
 
 
 def get_collate_function(tokenizer):
     """
     Create a collate function for the Vox2Smiles dataset.
-    This function handles batching of voxelized molecules and tokenized SMILES strings.
+
+    Samples arrive as CPU atom records rather than voxel grids -- the grids are built on
+    the rank's own device in ``Vox2SmilesDataModule.on_after_batch_transfer``. See
+    ``src/data/common/voxelization/batched.py`` for why.
     """
-    
+
     pad_token_id = tokenizer.pad_token_id
 
     def collate_fn(batch, pad_token_id=pad_token_id):
         """Merge a list of dataset samples into a batch and trim trailing padding.
         """
-        pixel_values = torch.stack([item["pixel_values"] for item in batch])  # (B, C, D, H, W)
         input_ids = torch.stack([item["input_ids"] for item in batch])        # (B, L)
         attention_mask = torch.stack([item["attention_mask"] for item in batch])  # (B, L)
 
@@ -45,17 +114,26 @@ def get_collate_function(tokenizer):
         has_candidates = "candidate_tokens" in batch[0]
 
         batch_dict = {
-            "pixel_values": pixel_values,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "smiles_str": smiles_str,
             "poc2mol_loss": poc2mol_loss,
         }
+        batch_dict.update(collate_voxel_inputs(batch))
+        batch_dict["needs_poc2mol"] = torch.tensor(
+            [bool(item.get("needs_poc2mol", False)) for item in batch], dtype=torch.bool
+        )
+
+        # Samples that carry protein atoms as well as ligand atoms tag them separately, so
+        # the two grids can be built and combined independently downstream.
+        if "protein_coords" in batch[0]:
+            batch_dict.update(collate_voxel_inputs(batch, key_prefix="protein_"))
+
         if has_candidates:
             batch_dict["candidate_tokens"] = batch[0]["candidate_tokens"]
             batch_dict["binder_indices"] = torch.tensor([item["binder_index"] for item in batch], dtype=torch.long)
         return batch_dict
-    
+
     return collate_fn
 
 
@@ -89,7 +167,13 @@ class Vox2SmilesDataset(Dataset):
             box_dims=self.config.box_dims,
             random_rotation=self.random_rotation,
             random_translation=self.random_translation,
-            has_protein=False,  # Vox2Smiles doesn't use protein channels
+            # Honour the caller's setting rather than forcing ligand-only. With
+            # has_protein=True a standalone molecule still yields the protein channel
+            # slots, empty -- RDkitMolecularComplex reports n_atoms_protein = 0, so
+            # UnifiedView.get_protein_channels masks every atom out. That keeps ZINC and
+            # HiQBind records the same shape so they can share a batch, and it is exactly
+            # the masked-protein input the decoder needs for ligand-only pretraining.
+            has_protein=self.config.has_protein,
             ligand_channel_names=self.config.ligand_channel_names,
             protein_channel_names=self.config.protein_channel_names,
             protein_channels=self.config.protein_channels,
@@ -97,6 +181,7 @@ class Vox2SmilesDataset(Dataset):
             max_atom_dist=self.config.max_atom_dist,
             dtype=self.config.dtype
         )
+        self.view = UnifiedView(self.voxel_config)
 
     def __len__(self):
         return len(self.data)
@@ -119,12 +204,12 @@ class Vox2SmilesDataset(Dataset):
         if not self.config.include_hydrogens:
             mol = Chem.RemoveHs(mol)
         
-        # Voxelize the molecule
-        voxel = voxelize_molecule(mol, self.voxel_config)
-        
+        # Extract a CPU atom record; the grid is built on the rank's device later
+        record = molecule_atom_record(mol, self.voxel_config, self.view)
+
         # Get the SMILES string
         smiles_str = self.tokenizer.bos_token + Chem.MolToSmiles(mol) + self.tokenizer.eos_token
-        
+
         # Tokenize the SMILES string
         smiles = self.tokenizer(
             smiles_str,
@@ -133,14 +218,12 @@ class Vox2SmilesDataset(Dataset):
             truncation=True,
             return_tensors="pt"
         )
-        
-        # Return the voxelized molecule and tokenized SMILES string
-        return {
-            "pixel_values": voxel,
+        record.update({
             "input_ids": smiles["input_ids"].squeeze(),
             "attention_mask": smiles["attention_mask"].squeeze(),
-            "smiles_str": smiles_str
-        }
+            "smiles_str": smiles_str,
+        })
+        return record
 
 
 import os
@@ -200,7 +283,12 @@ class ParquetVox2SmilesDataset(Dataset):
                 file_size = len(df)
                 self.file_sizes.append(file_size)
                 self.total_molecules += file_size
-            pd.DataFrame({"parquet_file": self.file_list, "file_size": self.file_sizes}).to_csv(index_path, index=False)
+            # Atomic write: under DDP all ranks build this at once and a partially
+            # written CSV would be readable by another rank.
+            from src.data.poc2mol.datasets import _atomic_write
+            _atomic_write(index_path, lambda f: pd.DataFrame(
+                {"parquet_file": self.file_list, "file_size": self.file_sizes}
+            ).to_csv(f, index=False))
         
         self.molecule_map = []
         for file_idx, size in enumerate(self.file_sizes):
@@ -215,7 +303,13 @@ class ParquetVox2SmilesDataset(Dataset):
             box_dims=self.config.box_dims,
             random_rotation=self.random_rotation,
             random_translation=self.random_translation,
-            has_protein=False,  # Vox2Smiles doesn't use protein channels
+            # Honour the caller's setting rather than forcing ligand-only. With
+            # has_protein=True a standalone molecule still yields the protein channel
+            # slots, empty -- RDkitMolecularComplex reports n_atoms_protein = 0, so
+            # UnifiedView.get_protein_channels masks every atom out. That keeps ZINC and
+            # HiQBind records the same shape so they can share a batch, and it is exactly
+            # the masked-protein input the decoder needs for ligand-only pretraining.
+            has_protein=self.config.has_protein,
             ligand_channel_names=self.config.ligand_channel_names,
             protein_channel_names=self.config.protein_channel_names,
             protein_channels=self.config.protein_channels,
@@ -223,6 +317,7 @@ class ParquetVox2SmilesDataset(Dataset):
             max_atom_dist=self.config.max_atom_dist,
             dtype=self.config.dtype
         )
+        self.view = UnifiedView(self.voxel_config)
 
     def __len__(self):
         return self.total_molecules
@@ -247,6 +342,31 @@ class ParquetVox2SmilesDataset(Dataset):
         
         # Get the molecule data
         mol_data = self.cache[file_path].iloc[row_idx]
+
+        # parquet_v2: coordinates and per-atom features are stored directly, so no RDKit
+        # parse is needed and none is wanted -- MolFromMolBlock per sample is the stage-1
+        # bottleneck (CLAUDE.md §3h). v2 deliberately drops `mol_block`, so its presence is
+        # what distinguishes the two layouts.
+        if 'mol_block' not in mol_data:
+            record = stored_molecule_atom_record(mol_data, self.voxel_config, self.view)
+            # The stored SMILES, not MolToSmiles of a reparsed block. It is the same string
+            # the v1 path produced (the regeneration carried the column across unchanged),
+            # and re-deriving it would put RDKit straight back in the hot path.
+            smiles_str = self.tokenizer.bos_token + mol_data['smiles'] + self.tokenizer.eos_token
+            smiles = self.tokenizer(
+                smiles_str,
+                padding='max_length',
+                max_length=self.max_smiles_len,
+                truncation=True,
+                return_tensors="pt",
+            )
+            record.update({
+                "input_ids": smiles["input_ids"].squeeze(),
+                "attention_mask": smiles["attention_mask"].squeeze(),
+                "smiles_str": smiles_str,
+            })
+            return record
+
         # Reconstruct the RDKit molecule from the mol block
         mol_block = mol_data['mol_block']
         mol = Chem.MolFromMolBlock(mol_block.decode() if isinstance(mol_block, bytes) else mol_block)
@@ -276,12 +396,12 @@ class ParquetVox2SmilesDataset(Dataset):
                     mol = Chem.AddHs(mol)
                 AllChem.EmbedMolecule(mol, AllChem.ETKDG())
         
-        # Voxelize the molecule
-        voxel = voxelize_molecule(mol, self.voxel_config)
-        
+        # Extract a CPU atom record; the grid is built on the rank's device later
+        record = molecule_atom_record(mol, self.voxel_config, self.view)
+
         # Get the SMILES string
         smiles_str = self.tokenizer.bos_token + Chem.MolToSmiles(mol) + self.tokenizer.eos_token
-        
+
         # Tokenize the SMILES string
         smiles = self.tokenizer(
             smiles_str,
@@ -289,51 +409,50 @@ class ParquetVox2SmilesDataset(Dataset):
             max_length=self.max_smiles_len,
             truncation=True,
             return_tensors="pt"
-        ).to(voxel.device)
+        )
         if self.tokenizer.unk_token_id in smiles.input_ids:
             print(f"UNK token in SMILES string: {smiles_str}")
-        # Return the voxelized molecule and tokenized SMILES string
-        return {
-            "pixel_values": voxel,
+        record.update({
             "input_ids": smiles["input_ids"].squeeze(),
             "attention_mask": smiles["attention_mask"].squeeze(),
-            "smiles_str": smiles_str
-        }
+            "smiles_str": smiles_str,
+        })
+        return record
 
 
 class Poc2MolOutputDataset(Dataset):
+    """Protein-ligand complexes destined to be turned into Poc2Mol outputs.
+
+    Historically this class *owned* a Poc2Mol model, put it on ``cuda`` in ``__init__``,
+    and ran it one sample at a time inside ``__getitem__``. That made DDP impossible --
+    every rank and every worker would have loaded the model onto ``cuda:0`` -- and forced
+    ``num_workers: 0``, which is why the pipeline ran at 25 samples/s.
+
+    The model now lives in the datamodule and runs batched, under ``no_grad``, on the
+    rank's own device (see ``Poc2MolInferenceBuilder``). What is left here is bookkeeping:
+    hand back the complex's atom record plus the tokenised ground-truth SMILES, tagged so
+    the batch builder knows which samples need a Poc2Mol forward pass.
     """
-    Dataset that uses the output of a Poc2Mol model as input to Vox2Smiles.
-    This is used for fine-tuning Vox2Smiles on the outputs of Poc2Mol.
-    """
+
     def __init__(
         self,
-        poc2mol_model,
         complex_dataset,
         max_smiles_len=200,
-        ckpt_path: str = None,
         decoy_smiles_list: list = None,
         include_decoys: bool = True,
+        poc2mol_model=None,
+        ckpt_path: str = None,
     ):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.poc2mol_model = poc2mol_model.to(complex_dataset.config.dtype).to(self.device)
+        if poc2mol_model is not None or ckpt_path is not None:
+            raise TypeError(
+                "Poc2MolOutputDataset no longer holds a Poc2Mol model. Configure the "
+                "checkpoint on the datamodule instead (data.poc2mol_ckpt_path), so the "
+                "model is loaded once per rank and run batched on the rank's own device."
+            )
         self.complex_dataset = complex_dataset
         self.tokenizer = build_smiles_tokenizer()
         self.tokenizer.pad_token = self.tokenizer.pad_token
         self.max_smiles_len = max_smiles_len
-        if ckpt_path is not None:
-            # Load the Lightning checkpoint
-            checkpoint = torch.load(ckpt_path)
-            # Extract the model state dict from the Lightning checkpoint
-            if "state_dict" in checkpoint:
-                # Remove 'model.' prefix if it exists in the keys
-                state_dict = {k.replace('model.', ''): v for k, v in checkpoint["state_dict"].items()}
-                self.poc2mol_model.model.load_state_dict(state_dict)
-            else:
-                # Fallback to direct loading if it's not a Lightning checkpoint
-                self.poc2mol_model.load_state_dict(checkpoint)
-
-        self.poc2mol_model.eval()
 
         self.include_decoys = include_decoys
         if self.include_decoys:
@@ -347,58 +466,40 @@ class Poc2MolOutputDataset(Dataset):
         return len(self.complex_dataset)
 
     def __getitem__(self, idx):
-        """
-        Get a protein-ligand complex, generate a predicted ligand voxel using Poc2Mol,
-        and pair it with the ground truth SMILES string.
-        """
-        # Get the protein-ligand complex
-        complex_data = self.complex_dataset[idx]
-        protein_voxel = complex_data['protein']
-        ground_truth_ligand_voxel = complex_data['ligand']
-        smiles_str = complex_data['smiles']
-        # Generate a predicted ligand voxel using Poc2Mol
-        with torch.no_grad():
-            outputs = self.poc2mol_model(
-                protein_voxel.unsqueeze(0),
-                labels=ground_truth_ligand_voxel.unsqueeze(0)
-            )
-            predicted_ligand_voxel = outputs['predicted_ligand_voxels'].squeeze(0)
+        record = self.complex_dataset[idx]
+        smiles_str = record["smiles"]
 
         binder_idx = None
         if self.include_decoys:
             # Find index of binder in global decoy list
             binder_idx = self.decoy_smiles_list.index(smiles_str)
-            # candidate tokens are the full stacked tensors (shared across samples)
-            candidate_tokens = self.tokenized_decoy_smiles
-        else:
-            candidate_tokens = None
 
         smiles_str = self.tokenizer.bos_token + smiles_str + self.tokenizer.eos_token
-        
-        # Tokenize the SMILES string
+
         smiles = self.tokenizer(
             smiles_str,
             padding='max_length',
             max_length=self.max_smiles_len,
             truncation=True,
             return_tensors="pt",
-        ).to(self.device)
+        )
 
-        result = {
-            "pixel_values": predicted_ligand_voxel,
+        record = dict(record)
+        record.update({
             "input_ids": smiles["input_ids"].squeeze(),
             "attention_mask": smiles["attention_mask"].squeeze(),
             "smiles_str": smiles_str,
-            "poc2mol_loss": outputs['loss'].item(),
-        }
+            # Marks this sample for a frozen Poc2Mol forward pass in the batch builder.
+            "needs_poc2mol": True,
+        })
 
         if self.include_decoys:
-            result.update({
-                "candidate_tokens": candidate_tokens,  # dict with stacked tensors
+            record.update({
+                "candidate_tokens": self.tokenized_decoy_smiles,
                 "binder_index": binder_idx,
             })
 
-        return result
+        return record
 
     def tokenize_decoys(self):
         """Tokenize the global decoy SMILES list **once** and store stacked tensors.
@@ -432,6 +533,15 @@ class CombinedDataset(Dataset):
     """
     Dataset that combines Poc2Mol outputs and original Vox2Smiles data.
     This is used for fine-tuning Vox2Smiles on a mix of Poc2Mol outputs and original data.
+
+    Both sources yield atom records with the same channel layout, so they can share a
+    batch: the ligand-only source leaves the protein channel slots empty (see
+    ``has_protein`` in the voxel config).
+
+    The ``max_poc2mol_loss`` quality filter cannot run here any more -- it needs the
+    Poc2Mol loss, which is only known once the model has run, and the model now runs
+    batched in the datamodule. The threshold is applied there instead, by masking rejected
+    samples out of the language-modelling loss. See ``Poc2MolInferenceBuilder``.
     """
     def __init__(
         self,
@@ -447,15 +557,12 @@ class CombinedDataset(Dataset):
         # Calculate the number of samples from each dataset
         self.n_poc2mol = len(poc2mol_output_dataset)
         self.n_vox2smiles = len(vox2smiles_dataset)
-        
+
         # Calculate the total number of samples
         self.n_total = self.n_poc2mol + self.n_vox2smiles
         print(f"Total number of samples: {self.n_total}")
         print(f"Number of Poc2Mol samples: {self.n_poc2mol}")
         print(f"Number of Vox2Smiles samples: {self.n_vox2smiles}")
-        # Calculate the probability of selecting a sample from each dataset
-        self.p_poc2mol = self.n_poc2mol / self.n_total
-        self.p_vox2smiles = self.n_vox2smiles / self.n_total
 
     def __len__(self):
         return self.n_total
@@ -464,19 +571,9 @@ class CombinedDataset(Dataset):
         """
         Get a sample from either the Poc2Mol output dataset or the Vox2Smiles dataset.
         """
-        # Determine which dataset to sample from
         if np.random.random() < self.prob_poc2mol:
-            # Sample from Poc2Mol output dataset
-            idx_poc2mol = idx % self.n_poc2mol
-            result = self.poc2mol_output_dataset[idx_poc2mol]
-            if result['poc2mol_loss'] < self.max_poc2mol_loss:
-                return result
-            else:
-                result =  self.vox2smiles_dataset[idx % self.n_vox2smiles]
-                result['poc2mol_loss'] = -1
-        else:
-            # Sample from Vox2Smiles dataset
-            idx_vox2smiles = idx % self.n_vox2smiles
-            result = self.vox2smiles_dataset[idx_vox2smiles]
-            result['poc2mol_loss'] = -1
+            return self.poc2mol_output_dataset[idx % self.n_poc2mol]
+
+        result = self.vox2smiles_dataset[idx % self.n_vox2smiles]
+        result["needs_poc2mol"] = False
         return result

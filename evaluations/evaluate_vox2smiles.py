@@ -194,32 +194,16 @@ def voxelize_input_molecule(mol_path, voxel_config):
     try:
         voxel = voxelize_molecule(mol, voxel_config)
     except Exception as e:
-        print(f"Error in standard voxelization: {e}")
-        print("Falling back to alternative voxelization method...")
-        
-        # Fall back to using the voxelization pipeline from ComplexDataset
-        # This is a simplified version that only handles the ligand part
-        from src.data.common.voxelization.molecule_utils import (
-            apply_random_rotation,
-            apply_random_translation,
-            prepare_rdkit_molecule
-        )
-        
-        # Prepare the molecule
-        mol = prepare_rdkit_molecule(mol, voxel_config)
-        
-        # Apply transformations if needed
-        if voxel_config.random_rotation:
-            mol = apply_random_rotation(mol)
-        
-        if voxel_config.random_translation > 0:
-            mol = apply_random_translation(mol, voxel_config.random_translation)
-        
-        # Create voxelizer and voxelize
-        from src.data.common.voxelization.voxelizer import UnifiedVoxelGrid
-        voxelizer = UnifiedVoxelGrid(voxel_config)
-        voxel = voxelizer.voxelize_ligand(mol)
-    
+        # There used to be a "fallback voxelisation" here. It could never have worked: it
+        # called UnifiedVoxelGrid.voxelize_ligand, which does not exist (the method is
+        # `voxelize`), and it re-applied the random rotation and translation on top of
+        # prepare_rdkit_molecule, which has already applied them. Silently producing
+        # differently-augmented voxels would be worse than failing, and voxelize_molecule
+        # is now the same corrected path training uses -- so surface the real error.
+        raise RuntimeError(
+            f"Failed to voxelize molecule: {e}"
+        ) from e
+
     return voxel, mol
 
 

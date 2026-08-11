@@ -1,0 +1,44 @@
+# parquet_v2 complex dataset with the 11-channel ligand scheme.
+# The ligand map MUST stay byte-identical to configs/data/poc2mol_hiqbind_v2_11ch.yaml and to
+# vox2smiles_zinc_v2_11ch.yaml -- the frozen Poc2Mol emits under this map and the decoder was
+# pretrained under it, so any divergence is a train/serve split (CLAUDE.md §3b bug 2).
+# The catch-all MUST remain last: ligand_last_channel_is_catch_all inverts the final entry.
+_target_: src.data.poc2mol.datasets.ParquetDataset
+data_path: ../hiqbind/parquet_v2/train
+translation: 6.0
+rotate: true
+config:
+  _target_: src.data.common.voxelization.config.Poc2MolDataConfig
+  batch_size: 1
+  has_protein: true
+  protein_channel_indices: [0, 1, 2, 3]
+  protein_channels:
+    0: ["C"]
+    1: ["O"]
+    2: ["N"]
+    3: ["S"]
+  protein_channel_names:
+    - carbon
+    - oxygen
+    - nitrogen
+    - sulphur
+  ligand_channel_indices: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  ligand_channels:
+    0: [ "C_aliphatic" ]
+    1: [ "C_aromatic" ]
+    2: [ "N_withH" ]
+    3: [ "N_noH" ]
+    4: [ "O_withH" ]
+    5: [ "O_noH" ]
+    6: [ "S" ]
+    7: [ "Cl", "Br", "I" ]
+    8: [ "F" ]
+    9: [ "HBA" ]
+    10: [ "C", "H", "O", "N", "S", "Cl", "F", "I", "Br" ]
+  ligand_channel_names: [ "carbon_aliphatic", "carbon_aromatic", "nitrogen_with_h",
+                          "nitrogen_no_h", "oxygen_with_h", "oxygen_no_h", "sulfur",
+                          "halogen", "fluorine", "hbond_acceptor", "other" ]
+  vox_size: 0.75
+  box_dims: [24.0, 24.0, 24.0]
+  random_rotation: true
+  random_translation: 6.0

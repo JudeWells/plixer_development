@@ -1,0 +1,22 @@
+defaults:
+  - default
+
+# All 8 H100s on the node. src/train.py divides target_samples_per_batch by
+# batch_size * world_size, so the effective batch per optimiser step is unchanged relative
+# to a single-GPU run -- that is what makes runs at different world sizes comparable.
+devices: 8
+num_nodes: 1
+
+# Plain DDP. find_unused_parameters is deliberately NOT enabled: the only unused parameters
+# were the ViT pooler's, which VisionEncoderDecoderModel never reads, and that is now
+# constructed with add_pooling_layer=False. If DDP starts complaining about unused
+# parameters again, find the dead module rather than turning the flag on -- it costs a full
+# extra parameter sweep every step.
+strategy: ddp
+
+# Poc2Mol's UNet uses GroupNorm ('gcr' layer order), which is per-sample and needs no
+# cross-rank synchronisation, so sync_batchnorm would be pure overhead.
+sync_batchnorm: false
+
+# Rank zero does the logging; leaving this at the default would log 8x.
+log_every_n_steps: 50

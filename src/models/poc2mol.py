@@ -196,11 +196,44 @@ class Poc2Mol(LightningModule):
         pred_vox = outputs["predicted_ligand_voxels"]
         loss = outputs["loss"]
 
-        # Log each component
+        # Log each component. sync_dist=True is required under DDP: without it each rank
+        # reports only its own shard of the validation set, so val/loss would be a
+        # different quantity at different world sizes -- and ModelCheckpoint would select
+        # on rank zero's shard alone.
         for k, v in outputs.items():
             if k in {"predicted_ligand_voxels", "predicted_ligand_logits"}:
                 continue
-            self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=(k=="loss"))
+            self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=(k=="loss"),
+                     sync_dist=True)
+
+        # --- emission diagnostics -------------------------------------------------------
+        # val/loss is dominated by the Dice floor (~76% of it is a constant no model can
+        # improve, §3c), so it is nearly useless for judging whether the density is getting
+        # SHARPER as opposed to just present. These three are not floor-bound:
+        #
+        #   ratio        total predicted mass / total true mass. Measured at 1.3-10x per
+        #                channel (§18), i.e. the model over-emits everywhere.
+        #   on_target    share of predicted mass landing on real ligand density. Only 58%
+        #                for carbon and <5% for the rare channels -- most emitted mass is
+        #                in the wrong place.
+        #   empty_frac   share of predicted mass sitting in channels the ligand leaves
+        #                EMPTY. Dice's numerator is identically zero there so it supplies no
+        #                gradient (§3c); only BCE penalises it. This is THE metric a BCE
+        #                weight sweep should move.
+        with torch.no_grad():
+            pred = pred_vox.float()
+            true = batch["ligand"].float()
+            total = pred.sum().clamp(min=1e-6)
+            occupied = (true > 0.05)
+            # per (sample, channel): is the target channel completely empty?
+            empty_ch = (true.sum(dim=(2, 3, 4)) <= 0)
+            self.log("val/emission/ratio", total / true.sum().clamp(min=1e-6),
+                     on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/emission/on_target", (pred * occupied).sum() / total,
+                     on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/emission/empty_frac",
+                     (pred.sum(dim=(2, 3, 4)) * empty_ch).sum() / total,
+                     on_step=False, on_epoch=True, sync_dist=True)
 
         # Optional visualisation
         if self.visualise_val and batch_idx in [0, 50, 100]:

@@ -1,0 +1,101 @@
+# @package _global_
+# Stage-3 combined fine-tune, parquet_v2, 9-CHANNEL scheme.
+#
+# Purpose: decide 9ch vs 11ch on the DOWNSTREAM task. §18a showed the two schemes' val/loss
+# values are not comparable (the Dice floor moves with how many channels a ligand occupies) and
+# that they tie on the pose-free composition readout. This runs the full pipeline -- matched
+# 9-channel Poc2Mol + 9-channel decoder -- and compares them on likelihood ranking, which
+# is what the model is actually for.
+#
+# Paired with exp1_s3_v2_11ch.yaml; everything but the channel
+# scheme is held identical.
+defaults:
+  - _self_
+  - override /data: vox2smiles_combined_v2_9ch
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_s3_v2_9ch"
+tags: ["${task_name}", "exp1", "stage3", "v2", "9ch", "seed${seed}"]
+
+train: True
+test: False
+optimized_metric: "val/likelihood_auc_znorm"
+ckpt_path: null
+# Weights only, NOT ckpt_path: a full resume would restore stage 1's ~69k global_step and its
+# scheduler, starting this run past its own warmup. See src/train.py.
+init_weights_from: checkpoints/s1_v2/s1_v2_9ch.ckpt
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_s3_v2"
+    job_type: "stage3"
+    tags: ["exp1", "stage3", "v2", "9ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 14
+  # §14a: protein channels into the decoder made both metrics worse. Off.
+  inject_protein: false
+  quality_filter: none
+  max_poc2mol_loss: null
+  predicted_ligand_probability: 1.0
+  # Reach the DEPLOYED condition early -- §14b found the optimum at ~1300 steps, so a ramp
+  # ending at 15k (the old default) would still be ramping long after the model had turned.
+  predicted_ramp_start_step: 200
+  predicted_ramp_end_step: 2000
+  config:
+    include_hydrogens: false
+    has_protein: true
+    batch_size: 64
+    target_samples_per_batch: 256
+  train_dataset:
+    prob_poc2mol: 0.5
+
+model:
+  override_optimizer_on_load: true
+  visualise_val: false
+  config:
+    num_channels: 9
+    lr: 5e-5
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 200
+      num_stable_steps: 5800
+      num_decay_steps: 6000
+      min_lr_ratio: 0.1
+      interval: "step"
+
+callbacks:
+  early_stopping:
+    # ⚠️ Monitors the RANKING metric, not val/poc2mol/loss. The first A/B stopped on the loss,
+    # which bottomed at ~step 1300 while likelihood_auc_znorm kept climbing for another 1700
+    # steps -- the 11ch arm was killed mid-ascent at its best value. The metric is noisy
+    # (+-0.02 between adjacent checks), hence the generous patience.
+    _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    patience: 12
+    min_delta: 0.0
+    check_on_train_epoch_end: False
+    verbose: True
+  model_checkpoint:
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    save_top_k: 2
+    save_last: True
+    save_weights_only: False
+    filename: "step_{step:07d}_auc_{val/likelihood_auc_znorm:.4f}"
+    auto_insert_metric_name: False
+
+trainer:
+  devices: 4
+  val_check_interval: 250
+  max_steps: 12000
+  max_epochs: 50

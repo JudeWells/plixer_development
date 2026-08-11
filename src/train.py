@@ -16,12 +16,19 @@ import math
 
 from src.utils import rich_utils
 
-# Set multiprocessing start method to 'spawn' to avoid CUDA issues
-# This must be done at the beginning of the program
+# Dataloader workers used to build voxel grids on the GPU, which meant CUDA tensors had to
+# be created in the worker and forced the 'spawn' start method (and a slow re-import of the
+# whole stack per worker). Workers are now CUDA-free -- voxelisation moved to
+# on_after_batch_transfer -- so 'fork' is both safe and far cheaper to start, which matters
+# at 16 workers x 8 ranks. Override with PLIXER_MP_START_METHOD=spawn if a worker ever
+# needs CUDA again.
 if __name__ == "__main__":
-    multiprocessing.set_start_method('spawn', force=True)
+    multiprocessing.set_start_method(
+        os.environ.get("PLIXER_MP_START_METHOD", "fork"), force=True
+    )
 
 from src.utils import (
+    ProvenanceCallback,
     RankedLogger,
     extras,
     get_metric_value,
@@ -29,6 +36,7 @@ from src.utils import (
     instantiate_loggers,
     log_hyperparameters,
     task_wrapper,
+    write_provenance,
 )
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
@@ -36,10 +44,35 @@ os.environ["HYDRA_FULL_ERROR"] = "1"
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
+def _resolve_world_size(cfg: DictConfig) -> int:
+    """Number of processes the trainer will launch, from the trainer config alone.
+
+    Needed before the Trainer exists, so it has to mirror Lightning's own interpretation of
+    `devices`: an int is a count, -1 or "auto" means every visible device, and a list is an
+    explicit selection.
+    """
+    devices = cfg.trainer.get("devices", 1)
+    num_nodes = int(cfg.trainer.get("num_nodes", 1) or 1)
+
+    if isinstance(devices, str):
+        devices = -1 if devices == "auto" else int(devices)
+    if isinstance(devices, int):
+        n_devices = torch.cuda.device_count() if devices == -1 else devices
+    else:  # list / ListConfig of device indices
+        n_devices = len(devices)
+
+    return max(1, int(n_devices)) * max(1, num_nodes)
+
+
 @task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
+
+    # Record git state, resolved config and parent checkpoints before anything runs.
+    # `write_provenance` is rank-zero-only, so other ranks get None; only rank zero
+    # writes checkpoints, so an empty record elsewhere is harmless.
+    provenance_record = write_provenance(cfg, cfg.paths.output_dir) or {}
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
@@ -73,16 +106,64 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
 
+    # Embeds the provenance record into every checkpoint this run saves, so a stray
+    # .ckpt file is enough to identify the code and config that produced it.
+    callbacks.append(ProvenanceCallback(provenance_record))
+
     batch_size = cfg.data.config.batch_size
     target_samples_per_batch = cfg.data.config.get("target_samples_per_batch", batch_size)
 
-    # Calculate accumulate_grad_batches
-    accumulate_grad_batches = max(1, math.ceil(target_samples_per_batch / batch_size))
+    # Under DDP every rank contributes a full batch to each optimiser step, so the world
+    # size has to divide out here. Without it, moving from 1 to 8 GPUs would silently
+    # multiply the effective batch by 8 and the "matched budget" comparison between the
+    # baseline and the protein-channel arm would not be matched at all.
+    world_size = _resolve_world_size(cfg)
+    samples_per_step = batch_size * world_size
+    accumulate_grad_batches = max(1, round(target_samples_per_batch / samples_per_step))
 
     # Set accumulate_grad_batches in trainer config
     cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
 
-    log.info(f"Calculated accumulate_grad_batches: {accumulate_grad_batches}")
+    effective = samples_per_step * accumulate_grad_batches
+    log.info(
+        f"Effective batch: {batch_size} per rank x {world_size} ranks x "
+        f"{accumulate_grad_batches} accumulation = {effective} samples/step "
+        f"(target {target_samples_per_batch})"
+    )
+    if effective != target_samples_per_batch:
+        log.warning(
+            f"Effective batch {effective} != target {target_samples_per_batch}. "
+            f"{target_samples_per_batch} is not divisible by batch_size x world_size "
+            f"({samples_per_step}); runs at different world sizes will NOT be comparable. "
+            f"Pick a batch_size that divides it evenly."
+        )
+
+    # Weights-only initialisation, distinct from `ckpt_path`. `ckpt_path` goes to
+    # trainer.fit and restores EVERYTHING -- global_step, optimizer and scheduler state --
+    # which is right for resuming an interrupted run but wrong for starting a new curriculum
+    # stage: stage 2 would begin at stage 1's ~100k steps, landing past its own warmup and
+    # potentially past max_steps. This loads the tensors and nothing else, so the new stage
+    # starts at step 0 with its own schedule.
+    init_from = cfg.get("init_weights_from")
+    if init_from:
+        log.info(f"Initialising model weights from {init_from} (weights only, step resets to 0)")
+        checkpoint = torch.load(init_from, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        # Metric buffers legitimately come and go as metrics are added, so those are
+        # expected; anything else means the architectures differ and the run is not what
+        # it claims to be -- most likely a channel-count mismatch between arms, since the
+        # patch-embedding conv width differs between the 9ch and 14ch decoders.
+        unexpected = [k for k in incompatible.unexpected_keys if not k.startswith(("val_", "train_", "test_"))]
+        missing = [k for k in incompatible.missing_keys if not k.startswith(("val_", "train_", "test_"))]
+        if unexpected or missing:
+            log.warning(f"state_dict mismatch on init: missing={missing[:8]} unexpected={unexpected[:8]}")
+        else:
+            log.info("state_dict loaded cleanly (metric buffers aside)")
+        # Same shape as the entries write_provenance emits; logging_utils reads .get on these.
+        provenance_record.setdefault("parent_checkpoints", []).append(
+            {"config_key": "init_weights_from", "path": str(init_from)}
+        )
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer: Trainer = hydra.utils.instantiate(
@@ -96,6 +177,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         "callbacks": callbacks,
         "logger": logger,
         "trainer": trainer,
+        "provenance": provenance_record,
     }
 
     if logger:

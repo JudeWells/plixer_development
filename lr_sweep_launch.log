@@ -1,0 +1,5 @@
+lr sweep dir: logs/exp1_lr_sweep/20260807_105404  (control: s1_protein at lr 1e-4)
+  gpu0  lr=2e-4  batch=128 x accum 2 = 256 effective
+  gpu1  lr=3e-4  batch=128 x accum 2 = 256 effective
+  gpu2  lr=5e-4  batch=128 x accum 2 = 256 effective
+  gpu3  lr=1e-3  batch=128 x accum 2 = 256 effective

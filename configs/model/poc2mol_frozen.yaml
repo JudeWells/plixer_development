@@ -1,0 +1,40 @@
+# The SHARED, FROZEN Poc2Mol consumed by the decoder stages.
+#
+# Architecture must match checkpoints/exp1_shared_poc2mol/poc2mol_cons4_drop_epoch307.ckpt.
+# nn.Dropout carries no parameters so the state_dict would load either way, and the model runs
+# in eval() so dropout is inactive -- but keeping layer_order/dropout_prob faithful to the
+# checkpoint means `describe_checkpoint` and the provenance record stay honest.
+#
+# 4 input channels: protein C/O/N/S, NO hydrogen. See CLAUDE.md §3f -- HiQBind protonates with
+# the ligand in the force field, so any protein hydrogen channel leaks the target.
+_target_: src.models.poc2mol.Poc2Mol
+matmul_precision: 'high'
+lr: 1e-4
+img_save_dir: ${paths.img_save_dir}
+weight_decay: 0.05
+loss:
+  name: BCEDiceLoss
+  weight: null
+  normalization: sigmoid
+  alpha: 1.0
+  beta: 1.0
+scheduler:
+  type: "cosine_with_min_lr"
+  num_warmup_steps: 500
+  min_lr_rate: 0.5
+  interval: "step"
+  frequency: 1
+config:
+  _target_: src.models.poc2mol.ResUnetConfig
+  in_channels: 4
+  out_channels: 9
+  final_sigmoid: false
+  f_maps: 64
+  layer_order: 'gcrd'
+  dropout_prob: 0.1
+  num_groups: 8
+  num_levels: 5
+  conv_padding: 1
+  conv_upscale: 2
+  upsample: default
+  basic_module: ${oc.select:src.models.pytorch3dunet_lib.unet3d.buildingblocks.ResNetBlockSE, src.models.pytorch3dunet_lib.unet3d.buildingblocks.ResNetBlockSE}

@@ -1,0 +1,88 @@
+# @package _global_
+# Experiment 1 -- shared Poc2Mol, protein-representation sweep (hpolar5).
+#
+# DIAGNOSTIC (§3f). Protein C/O/N/S plus ONLY the polar hydrogens (bonded to N/O/S).
+# These are the rotatable ones: HiQBind freezes every heavy atom but never mass-zeroes a
+# hydrogen, then minimises in a force field containing the ligand, so polar H relax toward
+# ligand acceptors. If this arm reproduces the h5 gain, that gain is leakage.
+#
+# Hyperparameters are fixed at the best of sweep 20260806_135055 (lr 1e-4, wd 0.05; that
+# sweep found lr/wd/dropout all within 0.003 of each other, so the representation is the
+# variable worth spending GPUs on). Dropout is varied from the command line via
+# model.config.layer_order -- note that dropout is only inserted when layer_order contains
+# 'd', so the earlier sweep's dropout arms were silent no-ops.
+defaults:
+  - _self_
+  - override /data: poc2mol_hiqbind_data
+  - override /model: poc2mol
+  - override /trainer: default
+  - override /logger: wandb.yaml
+
+task_name: "exp1_poc2mol_hpolar5"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "protein_repr"
+  - "hpolar5"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "poc2mol"
+    entity: "cath"
+    group: "exp1_poc2mol_protein_repr"
+    job_type: "train"
+    tags: ["exp1", "protein_repr", "hpolar5"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 12
+  config:
+    batch_size: 128
+    target_samples_per_batch: 128
+    protein_channels:
+      0: ["C"]
+      1: ["O"]
+      2: ["N"]
+      3: ["S"]
+      4: ["H_polar"]
+    protein_channel_names:
+      - C
+      - O
+      - N
+      - S
+      - Hpol
+
+model:
+  override_optimizer_on_load: False
+  visualise_train: False
+  visualise_val: False
+  lr: 1e-4
+  weight_decay: 0.05
+  config:
+    in_channels: 5
+    out_channels: 9
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3
+    save_last: False
+    filename: "epoch_{epoch:04d}_valloss_{val/loss:.4f}"
+    auto_insert_metric_name: False
+    save_weights_only: True
+
+trainer:
+  devices: 1
+  check_val_every_n_epoch: 1
+  val_check_interval: null
+  max_epochs: 600

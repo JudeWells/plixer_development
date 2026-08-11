@@ -1,0 +1,13 @@
+Launching 8 runs, 600 epochs each, logs in logs/exp1_poc2mol_protein_repr/20260806_155425
+GPU   NAME           CONFIG               ORDER  DROPOUT
+0     cons4_nodrop   exp1_poc2mol_cons4   gcr    0.0
+1     cons4_drop     exp1_poc2mol_cons4   gcrd   0.1
+2     h5_nodrop      exp1_poc2mol_h5      gcr    0.0
+3     h5_drop        exp1_poc2mol_h5      gcrd   0.1
+4     all5_nodrop    exp1_poc2mol_all5    gcr    0.0
+5     all5_drop      exp1_poc2mol_all5    gcrd   0.1
+6     hall6_nodrop   exp1_poc2mol_hall6   gcr    0.0
+7     hall6_drop     exp1_poc2mol_hall6   gcrd   0.1
+
+Monitor with:  bash scripts/watch_exp1_poc2mol_sweep.sh logs/exp1_poc2mol_protein_repr/20260806_155425
+Stop all with: cat logs/exp1_poc2mol_protein_repr/20260806_155425/*.pid | xargs -r kill

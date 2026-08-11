@@ -1,0 +1,73 @@
+# @package _global_
+# Experiment 1, PROTEIN arm -- stage 1: ligand-only pretraining on ZINC.
+#
+# ZINC molecules have no pocket, so the 4 protein channels are present but empty and the
+# flag plane is 0 throughout this stage. That is the point: the decoder learns the
+# "protein absent" regime here, which is what makes these weights a valid starting point
+# for the combined stage where the protein is sometimes present and sometimes masked.
+#
+# Differs from exp1_zinc_baseline.yaml ONLY in the protein channels.
+defaults:
+  - _self_
+  - override /data: vox2smiles_zinc_data
+  - override /model: vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "exp1_zinc_protein"
+tags:
+  - "${task_name}"
+  - "exp1"
+  - "protein_channels"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "exp1_zinc"
+    job_type: "pretrain"
+    tags: ["exp1", "protein_channels", "zinc"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 16
+  inject_protein: true
+  n_protein_channels: 4
+  # No masking here: every ZINC sample is already "protein absent", so there is nothing to
+  # mask. Masking is a combined-stage concern.
+  protein_mask_probability: 0.0
+  config:
+    include_hydrogens: false
+    # true so the (empty) protein channel slots are produced and the layout matches the
+    # combined stage exactly -- otherwise these weights could not be fine-tuned onto it.
+    has_protein: true
+    batch_size: 64
+    target_samples_per_batch: 512
+
+model:
+  override_optimizer_on_load: false
+  visualise_val: false
+  config:
+    # 9 ligand + 4 protein + 1 protein-present flag. Costs ~0.25M parameters and no
+    # measurable throughput (benchmarked 172.40M -> 172.65M, identical samples/s).
+    num_channels: 14
+    lr: 1e-4
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 2000
+      num_stable_steps: 400000
+      num_decay_steps: 400000
+      min_lr_ratio: 0.3
+      interval: "step"
+
+trainer:
+  val_check_interval: 6000
