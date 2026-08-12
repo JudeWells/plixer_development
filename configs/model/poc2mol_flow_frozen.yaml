@@ -1,0 +1,20 @@
+# The GENERATIVE Poc2Mol, frozen, as the density source for the stage-3 decoder.
+#
+# Mirrors poc2mol_frozen.yaml but instantiates Poc2MolFlow. Poc2MolInferenceBuilder detects
+# it via `is_generative` and reads it out with `predict_expected` (the conditional-mean
+# estimate) rather than a single forward pass -- see `generative_readout` there.
+_target_: src.models.poc2mol_flow.Poc2MolFlow
+matmul_precision: 'high'
+lr: 1e-4
+img_save_dir: ${paths.img_save_dir}
+# No EMA bookkeeping for a frozen model: the checkpoint's state_dict IS the EMA already.
+ema_decay: 0.0
+visualise_val: false
+config:
+  _target_: src.models.poc2mol_flow.FlowUnetConfig
+  ligand_channels: 11
+  protein_channels: 4
+  f_maps: 64
+  layer_order: 'gcr'
+  num_groups: 8
+  num_levels: 5

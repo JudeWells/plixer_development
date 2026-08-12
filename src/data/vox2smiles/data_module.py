@@ -100,6 +100,12 @@ class Vox2SmilesDataModule(LightningDataModule):
         predicted_ligand_probability: float = 1.0,
         predicted_ramp_start_step: int = 0,
         predicted_ramp_end_step: int = 0,
+        # Only consulted when poc2mol_model is a GENERATIVE Poc2Mol; see
+        # Poc2MolInferenceBuilder for what each readout costs and scores.
+        generative_readout: str = "one_step",
+        generative_draws: int = 4,
+        generative_guidance: float = 3.0,
+        generative_steps: int = 50,
     ):
         super().__init__()
         self.config = config
@@ -133,6 +139,10 @@ class Vox2SmilesDataModule(LightningDataModule):
                 predicted_ligand_probability=predicted_ligand_probability,
                 predicted_ramp_start_step=predicted_ramp_start_step,
                 predicted_ramp_end_step=predicted_ramp_end_step,
+                generative_readout=generative_readout,
+                generative_draws=generative_draws,
+                generative_guidance=generative_guidance,
+                generative_steps=generative_steps,
             )
         else:
             self.voxel_builder = LigandVoxelBuilder(

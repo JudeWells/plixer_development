@@ -1,0 +1,128 @@
+# Generative Poc2Mol: conditional flow matching (rectified flow) from pocket to ligand.
+# See src/models/poc2mol_flow.py for the formulation and why it replaces BCE+Dice.
+_target_: src.models.poc2mol_flow.Poc2MolFlow
+matmul_precision: 'high'
+lr: 1e-4
+# Lower than the regression model's 0.2. Weight decay fights the EMA for control of the
+# effective weight scale, and diffusion/flow codebases converge on 0.0-0.05.
+weight_decay: 0.01
+img_save_dir: ${paths.img_save_dir}
+
+# ---------------------------------------------------------------------- flow objective
+# Rectified flow: x_t = (1 - t) x0 + t x1, target velocity x1 - x0. sigma_min > 0 keeps a
+# floor of noise at t = 1; 0 is the standard choice and makes the path exactly straight.
+sigma_min: 0.0
+
+# Logit-normal concentrates training where the velocity is hardest to predict (SD3).
+# `uniform` is the 2023 default and the obvious ablation.
+time_sampling: logit_normal
+logit_normal_mean: 0.0
+logit_normal_std: 1.0
+
+# t <- s t / (1 + (s - 1) t), applied to BOTH the training density and the sampling grid.
+#
+# DIRECTION MATTERS AND IS INVERTED RELATIVE TO SD3. Here x_t = (1-t) x0 + t x1, so t=0 is
+# NOISE and t=1 is DATA; SD3 uses the opposite convention. Their "shift > 1 to spend more of
+# the path near noise" is therefore **s < 1** in this codebase. Measured on a logit-normal
+# base draw, the fraction of training samples at the noisy end (t < 0.25) goes:
+#     s = 0.33 -> 50.6%,  s = 1.0 -> 13.7%,  s = 3.0 -> 1.4%
+# Higher-dimensional data wants MORE time near noise, and 32^3 x 11 is large, so the
+# candidates worth sweeping are 1.0 / 0.5 / 0.33. s = 3.0 was run on 2026-08-11 and was the
+# worst arm by a wide margin -- it trains 10x less where global structure is decided.
+time_shift: 1.0
+
+# Fraction of training samples whose pocket is zeroed, making the same weights an
+# unconditional model. Without this, classifier-free guidance is unavailable at sampling --
+# and guidance is the direct knob for "commit to a pose".
+cond_dropout_prob: 0.1
+
+# --------------------------------------------------------------------- representation
+# occupancy in [0, 1] -> (occ - shift) / scale, i.e. [-1, 1] by default, which is the range
+# the Gaussian prior expects. ~96% of voxels are empty, so the marginal sits near -1; that
+# is the same imbalance image diffusion handles routinely.
+occupancy_shift: 0.5
+occupancy_scale: 0.5
+
+# ------------------------------------------------------------------------- sampling
+sample_steps: 50
+sampler: heun          # 2nd order; costs two network evaluations per step
+guidance_scale: 1.0    # 1.0 = off. >1 sharpens pocket dependence, at the cost of diversity
+# Bound on |x| in model space applied after every ODE step -- the standard remedy for a
+# trajectory that runs away. OFF by default ON PURPOSE: with it on, a diverging model still
+# returns a plausible-looking saturated grid and val/sample/out_of_range understates the
+# problem. Diagnose with the metrics below first, then set this (2.0 is a sane value).
+sample_clamp: null
+
+# ------------------------------------------------------------------------ validation
+# val/loss is the flow MSE and is NOT the selection metric -- a model can predict
+# velocities well and still sample poor densities. val/sample/dice integrates the ODE and
+# scores the result with the same pooled soft Dice as the rotation control. Beat 0.5027
+# (the regression model on THIS split; report.md's 0.596 is a different pocket set -- CLAUDE.md 1).
+val_sample_every_n_epochs: 1
+# A POCKET budget, not a batch count, so the metric's sample size does not move when the
+# validation batch size does. Per rank. Selecting a checkpoint on a handful of pockets is
+# selecting on noise, so keep this in the low hundreds.
+n_val_sample_pockets: 128
+val_sample_steps: 25
+val_guidance_scale: null   # null -> use guidance_scale
+# Everything deterministic in validation is keyed off a sample's position in the split, not
+# its batch index, so val/loss survives a change of validation batch size.
+val_noise_seed: 1234
+n_val_t_grid: 32
+n_t_bins: 8
+
+# THE TRAIN/SAMPLE GAP WATCHDOG. The classic failure of a generative voxel model is that the
+# training loss falls nicely while sampling walks off the data manifold and returns a
+# nonsensical grid -- the network only ever sees x_t ON the true path during training, so
+# once integration error pushes the state off it, the velocities are extrapolations and the
+# error compounds. Sample Dice cannot detect this: an untrained model and a diverged one
+# both score ~0. These can:
+#
+#   val/sample/traj_rms_max   max RMS of the ODE state over the trajectory. Every point of
+#                             the path has RMS ~1 in model space, so this is ~1 when healthy
+#                             REGARDLESS of how much the model has learned. A threshold-free
+#                             alarm: >2 is drifting, >10 is diverging.
+#   val/sample/rms_ratio      final state RMS / true data RMS. 1.0 = calibrated.
+#   val/sample/out_of_range   fraction of voxels outside [-0.1, 1.1] occupancy BEFORE the
+#                             clamp. The clamp would otherwise hide the whole failure.
+#   val/sample/max_abs_occ    the single worst voxel, pre-clamp.
+#   val/sample/occupied_frac  fraction > 0.5, against val/data/occupied_frac. A diverged
+#                             sample saturates everywhere.
+#   val/restore/dice_t50      sample started from the TRUE path at t = val_restore_t. This
+#                             is the one that assigns blame:
+#                               restore high + sample low -> field is fine, TRAJECTORY is
+#                                 diverging. More steps, or sample_clamp, or less guidance.
+#                               both low -> the model has not learned yet; the sampler is
+#                                 not the problem. Keep training.
+val_restore_t: 0.5
+
+# ------------------------------------------------------------------------------- EMA
+# Validation and the saved state_dict both use the EMA weights; see the contract in
+# src/models/poc2mol_flow.py. Set to 0 to disable.
+ema_decay: 0.999
+ema_warmup_steps: 1000
+
+visualise_val: false
+n_samples_for_visualisation: 2
+
+scheduler:
+  type: "cosine_with_min_lr"
+  num_warmup_steps: 500
+  min_lr_rate: 0.1
+  interval: "step"
+  frequency: 1
+
+config:
+  _target_: src.models.poc2mol_flow.FlowUnetConfig
+  # Named for what they carry, not in_/out_: the U-Net's input is the concatenation of the
+  # noisy ligand grid and the pocket, so a single in_channels number would have to be their
+  # sum and would be silently wrong the first time a channel scheme changed.
+  ligand_channels: 11
+  protein_channels: 4    # 0 for an unconditional model
+  f_maps: 64
+  layer_order: 'gcr'
+  num_groups: 8
+  num_levels: 5
+  conv_kernel_size: 3
+  pool_kernel_size: 2
+  temb_dim: null         # null -> 4 * f_maps

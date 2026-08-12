@@ -1,0 +1,66 @@
+# Ligand-only ZINC20 grids for UNCONDITIONAL pretraining of the generative Poc2Mol.
+#
+# The channel map is byte-identical to configs/data/poc2mol_hiqbind_v2_11ch.yaml. It has to
+# be: the pretrained weights are loaded straight into the pocket-conditioned stage, so any
+# divergence is a train/serve mismatch running through the middle of the model -- the same
+# failure mode as the case-mismatched halogens in report.md 3b.
+#
+# n_protein_channels: 4 pads the batch with an all-zero pocket rather than omitting it, so
+# the input width matches the fine-tuning stage exactly and the ZINC stage trains precisely
+# the unconditional branch that classifier-free guidance uses.
+_target_: src.data.poc2mol.ligand_data_module.LigandOnlyDataModule
+num_workers: 12
+n_protein_channels: 4
+val_batch_size: 8
+
+train_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_train.csv
+  random_rotation: true
+  random_translation: 6.0
+  config: ${data.config}
+
+# Deterministic, for the same reason as the Poc2Mol val set (report.md 3e): a validation
+# metric that scores a different augmentation each epoch is a moving target and cannot be
+# used for model selection.
+val_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_val.csv
+  random_rotation: false
+  random_translation: 0.0
+  config: ${data.config}
+
+config:
+  # Vox2SmilesDataConfig, not Poc2MolDataConfig: ParquetVox2SmilesDataset reads
+  # max_smiles_len from it. The SMILES tokens it produces are discarded by this
+  # datamodule's collate; only the voxel grids are used.
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  batch_size: 64
+  target_samples_per_batch: 512
+  max_smiles_len: 200
+  has_protein: false
+  vox_size: 0.75
+  box_dims: [ 24.0, 24.0, 24.0 ]
+  random_rotation: true
+  random_translation: 6.0
+  max_atom_dist: 32.0
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  ligand_channel_names: [ "carbon_aliphatic", "carbon_aromatic", "nitrogen_with_h",
+                          "nitrogen_no_h", "oxygen_with_h", "oxygen_no_h", "sulfur",
+                          "halogen", "fluorine", "hbond_acceptor", "other" ]
+  ligand_channels:
+    0: [ "C_aliphatic" ]
+    1: [ "C_aromatic" ]
+    2: [ "N_withH" ]
+    3: [ "N_noH" ]
+    4: [ "O_withH" ]
+    5: [ "O_noH" ]
+    6: [ "S" ]
+    7: [ "Cl", "Br", "I" ]
+    8: [ "F" ]
+    9: [ "HBA" ]
+    10: [ "C", "H", "O", "N", "S", "Cl", "F", "I", "Br" ]
+  dtype: ${oc.select:torch.bfloat16,torch.bfloat16}

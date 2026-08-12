@@ -1,0 +1,117 @@
+# Stage B data: HiQBind pockets mixed 50/50 with ligand-only ZINC20.
+#
+# Why mix at all: stage A bought a density prior from 8.86M molecules, and fine-tuning on
+# 9,872 clusters alone risks both forgetting it and overfitting. The ZINC rows are exactly
+# the unconditional branch classifier-free guidance already trains, so they cost nothing
+# conceptually -- they keep p(x) sharp while p(x | pocket) is learned.
+#
+# The two sources share a batch because `ligand_config.has_protein: true` makes the ZINC
+# dataset emit the 4 protein slots EMPTY (StoredLigandComplex reports n_atoms_protein = 0,
+# so UnifiedView masks every atom out of them). Same 15-channel layout, no padding logic.
+#
+# `ligand_config` interpolates every voxelisation field from `config` rather than repeating
+# it. These two MUST agree exactly -- a divergence would be a train/serve mismatch running
+# straight through the middle of the model, the same failure mode as the case-mismatched
+# halogens in report.md 3b -- and interpolation makes agreement structural rather than a
+# thing someone has to remember.
+_target_: src.data.poc2mol.mixed_data_module.MixedFlowDataModule
+num_workers: 10
+n_protein_channels: 4
+prob_pocket: 0.5
+# An epoch holds ~2x the pocket dataset, i.e. about as many POCKET samples as a pocket-only
+# epoch. Keeps epoch numbers and the val cadence comparable with the from-scratch control.
+samples_per_epoch: null
+val_batch_size: 32
+seed: 0
+
+pocket_train_dataset:
+  _target_: src.data.poc2mol.datasets.ParquetDataset
+  data_path: "../hiqbind/parquet_v2/train"
+  config: ${data.config}
+
+ligand_train_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_train.csv
+  random_rotation: true
+  random_translation: 6.0
+  config: ${data.ligand_config}
+
+# Validation is NOT mixed: two separate dataloaders, so val/hiqbind/* and val/zinc/* are
+# independently sized and neither moves when the training mixture changes. Order matters --
+# hiqbind is index 0 and is what checkpoints are selected on.
+pocket_val_dataset:
+  _target_: src.data.poc2mol.datasets.ParquetDataset
+  data_path: "../hiqbind/parquet_v2/val"
+  config: ${data.config}
+  rotate: false
+  translation: 0.0
+  use_cluster_member_zero: true
+
+ligand_val_dataset:
+  _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+  data_path: ../zinc20_parquet_v2
+  index_file: index_val.csv
+  random_rotation: false
+  random_translation: 0.0
+  config: ${data.ligand_config}
+
+config:
+  _target_: src.data.common.voxelization.config.Poc2MolDataConfig
+  remove_hydrogens: true
+  batch_size: 64
+  target_samples_per_batch: 512
+  ligand_channel_names: [ "carbon_aliphatic", "carbon_aromatic", "nitrogen_with_h",
+                          "nitrogen_no_h", "oxygen_with_h", "oxygen_no_h", "sulfur",
+                          "halogen", "fluorine", "hbond_acceptor", "other" ]
+  protein_channel_names: [ carbon, oxygen, nitrogen, sulfur ]
+  fnames: null
+  protein_channel_indices: [0, 1, 2, 3]
+  ligand_channel_indices: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  vox_size: 0.75
+  box_dims: [ 24.0, 24.0, 24.0 ]
+  random_rotation: true
+  random_translation: 6.0
+  has_protein: true
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  protein_channels:
+    0: [ "C" ]
+    1: [ "O" ]
+    2: [ "N" ]
+    3: [ "S" ]
+  ligand_channels:
+    0: [ "C_aliphatic" ]
+    1: [ "C_aromatic" ]
+    2: [ "N_withH" ]
+    3: [ "N_noH" ]
+    4: [ "O_withH" ]
+    5: [ "O_noH" ]
+    6: [ "S" ]
+    7: [ "Cl", "Br", "I" ]
+    8: [ "F" ]
+    9: [ "HBA" ]
+    10: [ "C", "H", "O", "N", "S", "Cl", "F", "I", "Br" ]
+  max_atom_dist: 32.0
+  dtype: ${oc.select:torch.bfloat16,torch.bfloat16}
+
+# The ZINC side. Vox2SmilesDataConfig because ParquetVox2SmilesDataset reads max_smiles_len
+# from it; the SMILES tokens it produces are discarded by this datamodule's collate.
+# has_protein: true is the whole trick -- see the header.
+ligand_config:
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  batch_size: ${data.config.batch_size}
+  max_smiles_len: 200
+  has_protein: true
+  vox_size: ${data.config.vox_size}
+  box_dims: ${data.config.box_dims}
+  random_rotation: ${data.config.random_rotation}
+  random_translation: ${data.config.random_translation}
+  max_atom_dist: ${data.config.max_atom_dist}
+  voxel_aggregation: ${data.config.voxel_aggregation}
+  voxel_radius_scale: ${data.config.voxel_radius_scale}
+  ligand_channel_names: ${data.config.ligand_channel_names}
+  protein_channel_names: ${data.config.protein_channel_names}
+  protein_channels: ${data.config.protein_channels}
+  ligand_channels: ${data.config.ligand_channels}
+  dtype: ${oc.select:torch.bfloat16,torch.bfloat16}

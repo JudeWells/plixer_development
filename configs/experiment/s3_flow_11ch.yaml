@@ -1,0 +1,37 @@
+# @package _global_
+# Stage 3, GENERATIVE arm -- the full pipeline with the flow Poc2Mol supplying the density.
+#
+# This is the experiment that decides the branch. Reconstruction Dice structurally favours
+# the regression model (it is trained to emit the conditional mean, which is what Dice
+# rewards), so the generative model has to prove itself on what the pipeline is FOR:
+# likelihood ranking of true binders and Tanimoto of generated SMILES.
+#
+# Paired with s3_regression_11ch.yaml. Everything is held identical except which Poc2Mol
+# supplies the ligand density, so the difference is attributable.
+#
+# The flow model is read out with `one_step` (the conditional-mean estimate) rather than by
+# sampling: it scores 0.372 Dice against a sample's 0.231, and costs `generative_draws`
+# forward passes instead of ~100, which is what makes it affordable inside a training loop.
+defaults:
+  - exp1_s3_v2_11ch
+  - override /model@data.poc2mol_model: poc2mol_flow_frozen
+  - _self_
+
+task_name: "s3_flow_11ch"
+tags: ["${task_name}", "stage3", "v2", "11ch", "generative", "seed${seed}"]
+
+logger:
+  wandb:
+    group: "s3_flow_vs_regression"
+    tags: ["stage3", "v2", "11ch", "generative"]
+
+data:
+  # Set by the launcher to the best stage-B flow checkpoint.
+  poc2mol_ckpt_path: ???
+  poc2mol_model:
+    config:
+      ligand_channels: 11
+      protein_channels: 4
+  generative_readout: one_step
+  generative_draws: 4
+  generative_guidance: 3.0

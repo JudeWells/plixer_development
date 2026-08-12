@@ -2307,3 +2307,150 @@ been lost. This is §18h/§19a biting for real: **every run before 2026-08-11 ch
 loss that decouples from the ranking metric**, so any historical run whose AUC peaked away from
 its loss minimum has already lost that checkpoint. The v2 stage-3 configs now monitor
 `val/likelihood_auc_znorm` directly.
+
+---
+
+# 22. Generative Poc2Mol (flow matching) — NEGATIVE RESULT (2026-08-11/12)
+
+**Verdict: the flow-matching Poc2Mol does not beat the regression Poc2Mol, on any metric
+that matters, and the branch should not be merged as a replacement.** It loses on
+reconstruction Dice, loses downstream on both likelihood ranking and Tanimoto, and its one
+clean advantage (it does not hallucinate confident density) does not convert into
+downstream value. The implementation is complete, tested and reusable; the idea, as
+specified, is refuted.
+
+## 22a. What was built
+
+| component | path |
+|---|---|
+| time-conditioned 3D U-Net (FiLM per block) | `src/models/flow_unet3d.py` |
+| `Poc2MolFlow` — objective, ODE samplers, CFG, EMA, mean readout, divergence watchdog | `src/models/poc2mol_flow.py` |
+| ligand-only ZINC datamodule (unconditional pretrain) | `src/data/poc2mol/ligand_data_module.py` |
+| mixed pocket/ligand datamodule, per-source metrics | `src/data/poc2mol/mixed_data_module.py` |
+| readout sweep / sampling watchdog / sample visualiser / multi-hypothesis eval | `scripts/adhoc_analysis/flow_*.py` |
+| 12 checks incl. a memorisation test and a divergence-alarm test | `tests/test_flow_matching.py` |
+
+Formulation: rectified flow, `x_t = (1-t)x0 + t x1`, target `x1 - x0`, MSE; logit-normal
+timesteps with SD3-style shift; classifier-free guidance via 10% pocket dropout. Capacity
+matched to the regression model (118.8M vs 117.2M parameters).
+
+## 22b. The measurements
+
+All on the FULL HiQBind v2 val split (1019 pockets) unless stated.
+
+| comparison | regression | generative | winner |
+|---|---|---|---|
+| reconstruction Dice | **0.5027 ± 0.0033** | 0.4350 (shift033) / ~0.47 (shift 0.05, unconverged) | regression |
+| MSE (whole grid) | 0.002791 | **0.002275** | generative* |
+| MSE, occupied voxels | **0.365** | 0.606 | regression |
+| MSE, empty voxels | 0.001653 | **0.000378** | generative |
+| emission ratio | **1.87** | 1.98 | regression |
+| on_target | **0.310** | 0.236 | regression |
+| empty_frac | **0.113** | 0.199 | regression |
+| haze (stray voxels > 0.01/pocket) | **14,427** | 19,319 | regression |
+| confident false positives (> 0.5/pocket) | 646 | **216** | generative |
+| rotation-control win rate, 15°–180° | **0.938–1.000** | 0.719–0.914 | regression |
+| stage-3 likelihood AUC znorm | **0.7522** | 0.7028 | regression |
+| stage-3 poc2mol Tanimoto | **0.1680** | 0.1474 | regression |
+
+\* MSE prefers the generative model only because squaring makes diffuse low-amplitude error
+nearly free, and that is precisely its error mode. The all-zeros control scores 0.002879 —
+i.e. the regression model is only 3% better than predicting nothing — so MSE is close to
+degenerate on data this sparse. It is not evidence of superiority.
+
+**Trivial baseline for context:** the parameter-free composition readout scores 0.7615 on
+likelihood AUC (§14d). BOTH stage-3 arms are below it.
+
+## 22c. Why it loses: the metric is maximised by the thing we removed
+
+`dice(pred, true)` and MSE are both minimised in expectation by the **conditional mean**,
+which is exactly what the regression model is trained to emit. A sample from a generative
+model is structurally penalised for committing to one plausible answer. This is not a
+detail — it dominates every reconstruction result:
+
+* Dice improves **monotonically as the ODE is integrated less**: 400 NFE of Heun scores
+  0.254, one Euler step scores 0.355, and the best score of all (0.4579 on 256 pockets)
+  comes from never integrating at all — averaging 48 one-step mean estimates.
+* The `time_shift` sweep traces the same continuum. Lower shift concentrates training at
+  t≈0, improving the one-shot readout (0.4288 → 0.4822 as shift goes 0.33 → 0.05) while
+  mid-path competence collapses (`restore/dice_t50` 0.868 → 0.303). In the limit shift→0
+  the model trains only at t=0, and a one-step readout of such a model **is** a regression
+  model reached by a longer route.
+
+So on reconstruction metrics the optimum IS the regression model, and every step toward it
+costs the generative capability. The generative case had to be made downstream, and wasn't.
+
+## 22d. What DID work
+
+* **ZINC pretraining**: +0.010 best Dice and ~2× faster to reach it (0.2269 at epoch 599 vs
+  0.2169 at epoch 1063 for the from-scratch control). The mechanism is sound.
+* **The one-step mean readout**: +0.15 Dice over sampling, for 1 network evaluation instead
+  of ~100. Any future flow model here should be read out this way.
+* **Classifier-free guidance**: +0.07–0.10 Dice, optimum at w≈3.25, and the pocket
+  decomposition confirms it amplifies genuine pocket-specific signal (correct 0.4555 vs
+  shuffled 0.2524 vs unconditional 0.1909).
+* **Multi-hypothesis aggregation**: mean over 8 decoded draws lifts likelihood AUC from
+  0.507 to 0.566 — a genuine generative-only capability, from too low a base to matter.
+* **Conditioning by concatenation is adequate**: the pocket-specific component is 0.203 of
+  the generative model's 0.4555, against 0.255 of the regression model's 0.5080 — the same
+  ~80% ratio as the overall scores, so nothing is anomalous about the conditioning pathway.
+
+## 22e. Measurement errors made along the way (for calibration)
+
+Four, all of which distorted the comparison, three in the generative model's disfavour:
+
+1. **`time_shift` direction inverted.** Here t=0 is noise and t=1 is data, the reverse of
+   SD3, so "more time near noise" is s<1, not s>1. One arm wasted at s=3.0.
+2. **Wrong yardstick inherited.** §12g's 0.596 is a different checkpoint on 104
+   PLINDER-panel pockets. The like-for-like figure is 0.5027.
+3. **Subsample mismatch.** `build_batches`'s `batch_size` argument does not control the val
+   loader (`data.val_batch_size` does), so a 128-pocket baseline was compared against
+   256-pocket flow numbers, understating the gap by 0.028.
+4. **Selection on the wrong readout.** `val/sample/dice` understates this model class by
+   ~0.21; checkpoints were selected on it for the first day — the §18h failure mode again.
+   `val/mean/dice` now logs the tuned readout alongside it.
+
+## 22f. Ideas NOT tried
+
+Ranked by my estimate of expected value. None is likely to produce the ~0.05 AUC swing
+needed to overturn the verdict, but the first two are cheap and attack real constraints.
+
+1. **Hybrid loss (implemented, never run).** `loss_type: hybrid`, `dice_weight` — MSE plus a
+   Dice term on the implied `x1 = x_t + (1-t)v`. The `(1-t)` factor makes it self-concentrate
+   at t≈0 where the deployed readout lives, with no hand-tuned weighting, while the MSE term
+   resists collapse toward the regression solution. Validated on the memorisation task
+   (one-step Dice 0.9994 vs 0.9927 for pure MSE); never trained at scale. This is the single
+   best remaining test of "is the loss/metric mismatch the binding constraint".
+2. **The representation ceiling.** `voxel_aggregation: max` is non-injective — measured
+   separability 0.07 (§10b) — so atom positions are destroyed *before* either model sees the
+   target. `sum` aggregation with `radius_scale < 1` exists in the config and was never tried
+   on this branch. It caps both models equally and would change every downstream number.
+3. **Uniform vs logit-normal timesteps.** The planned ablation was displaced by a GPU
+   reallocation and never ran, so the timestep density remains an untested assumption.
+4. **The 50/50 mixture question.** `flow_stage_b_mixed` was killed at epoch 206 while
+   `pocket_only` ran to 599; at matched epochs they tied. Genuinely unresolved.
+5. **Thresholding the flow density before the decoder.** Tests the hypothesis that the
+   decoder is damaged more by 19k haze voxels than by 646 confident errors. One eval, no
+   training.
+6. **SNR or per-channel loss weighting.** The flow loss spans three orders of magnitude
+   across t (0.0026 at t=0.5 to 1.43 at t=0.98, where the target is dominated by
+   unpredictable `-x0`). Uniform weighting is an untested default.
+7. **EMA ablation.** `ema_decay: 0.999` was asserted, never measured.
+8. **Distilling the one-step readout.** If only t≈0 is ever used, train it directly — but
+   note this is the regression model with a noise input, and item 22c predicts it converges
+   there.
+
+Deprioritised on evidence: the conditioning mechanism (§22d shows it is adequate) and
+further inference-time tuning (that surface is exhausted — steps, sampler, guidance and
+draw count are all mapped and at their optima).
+
+## 22g. Artefacts
+
+* Regression baseline: `checkpoints/poc2mol_v2/poc2mol_v2_11ch_ep576.ckpt`,
+  W&B `cath/poc2mol/2ho5efkl` (best val/loss ep576, git 536299e).
+* Best generative: `flow_shift_0p05` (W&B `cath/poc2mol/u710k1ig`) and
+  `flow_stage_b_mixed_shift033` (`cath/poc2mol/hp8lb9jq`). Neither converged — both were
+  still improving on a flat LR when the branch was concluded.
+* Stage-3 A/B on the current stage-1 decoder (`s1_v2_11ch_ep14_step247256.ckpt`):
+  generative `cath/voxelSmiles/4ytx5xkl`, regression `cath/voxelSmiles/bfhesgwr`.
+* Earlier stage-3 A/B on the older decoder: `175hadv0` / `p252tel6`.

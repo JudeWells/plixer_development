@@ -1,0 +1,56 @@
+# @package _global_
+# Timestep-shift sweep on a FLAT learning rate.
+#
+# Why flat: the 2026-08-11 arms used cosine_with_min_lr sized to max_epochs, so the LR was
+# at a quarter of peak by epoch 449 and at its 0.1 floor by 599 -- while val/loss was still
+# falling monotonically. Every arm was stopped by its schedule rather than by convergence,
+# which confounds "which shift is better" with "which shift tolerates a decaying LR"
+# (report.md 6: size the decay to the OBSERVED optimum, not to max_steps).
+#
+# constant_with_warmup holds the LR flat forever after warmup. Training is then limited by
+# the data and the model, and runs are stopped on an observed plateau instead of by an
+# arbitrary anneal.
+#
+# Selection is on val/mean/dice -- the conditional-mean readout (one_step, k draws, CFG),
+# which scores 0.458 on the checkpoint where the sampled readout scores 0.247. Selecting on
+# the sampled metric would select on a quantity we have measured to be the wrong one.
+defaults:
+  - flow_stage_b_mixed
+  - _self_
+
+task_name: "flow_shift_sweep"
+optimized_metric: "val/mean/dice"
+
+model:
+  scheduler:
+    type: "constant_with_warmup"
+    num_warmup_steps: 1500
+    interval: "step"
+    frequency: 1
+  # Logged every validation alongside val/sample/dice; 8 draws x CFG = 16 network evals,
+  # cheaper than the 50 the 25-step Heun sample costs.
+  val_mean_readout: true
+  val_mean_draws: 8
+  val_mean_guidance: 3.0
+
+callbacks:
+  early_stopping:
+    # Generous: the metric moves ~0.005 between adjacent checks and the curve is still
+    # creeping up long after it looks flat. 40 checks at check_val_every_n_epoch=2 is
+    # 80 epochs of no improvement before giving up.
+    _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/mean/dice"
+    mode: "max"
+    patience: 40
+    min_delta: 0.0
+    check_on_train_epoch_end: False
+    verbose: True
+  model_checkpoint:
+    monitor: "val/mean/dice"
+    mode: "max"
+    filename: "epoch_{epoch:04d}_meandice_{val/mean/dice:.4f}"
+
+trainer:
+  # Deliberately far beyond where these are expected to plateau; early stopping ends them.
+  max_epochs: 3000
+  check_val_every_n_epoch: 2

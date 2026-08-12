@@ -1,0 +1,18 @@
+# @package _global_
+# Stage 3, REGRESSION arm -- the matched control for s3_flow_11ch.yaml.
+#
+# Identical in every respect except that the density comes from the regression Poc2Mol
+# (poc2mol_v2_11ch_ep576, the checkpoint that scores 0.5027 reconstruction Dice on this
+# split). Run alongside the generative arm, not against a historical number: the stage-1
+# decoder, the data pipeline and the schedule have all moved since the runs in report.md 21.
+defaults:
+  - exp1_s3_v2_11ch
+  - _self_
+
+task_name: "s3_regression_11ch"
+tags: ["${task_name}", "stage3", "v2", "11ch", "regression", "seed${seed}"]
+
+logger:
+  wandb:
+    group: "s3_flow_vs_regression"
+    tags: ["stage3", "v2", "11ch", "regression"]

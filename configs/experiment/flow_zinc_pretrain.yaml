@@ -1,0 +1,113 @@
+# @package _global_
+# Stage A -- UNCONDITIONAL pretraining of the generative Poc2Mol on ZINC20 ligand grids.
+#
+# Why a pretraining stage at all: HiQBind is 9,872 clusters, so at effective batch 512 an
+# epoch is ~19 optimiser steps. A flow model has two things to learn -- what a plausible
+# ligand density looks like, and which one this pocket implies -- and only the second needs
+# a pocket. ZINC20's 8.96M molecules teach the first at ~900x the data. This mirrors the
+# Vox2Smiles curriculum exactly (stage 1 ZINC -> stage 3 pockets), and the architecture is
+# identical across the two stages, so stage B loads these weights with `init_weights_from`.
+#
+# The pocket channels are present and identically zero here, which is precisely the
+# unconditional branch classifier-free guidance uses at sampling time. Condition dropout is
+# therefore switched off for this stage -- there is nothing to drop.
+defaults:
+  - _self_
+  - override /data: poc2mol_flow_zinc_v2_11ch
+  - override /model: poc2mol_flow
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "flow_zinc_pretrain"
+tags:
+  - "${task_name}"
+  - "flow_matching"
+  - "stage_a"
+  - "lr${model.lr}"
+  - "seed${seed}"
+
+train: True
+test: False
+# The flow MSE is a legitimate selection metric HERE: it is the training objective, it is
+# measured deterministically (fixed noise, stratified t -- see Poc2MolFlow.validation_step)
+# and there is no Dice floor to hide in. Sample Dice is not: an unconditional sample has no
+# reason to reproduce a specific held-out molecule, so it would be scoring noise.
+optimized_metric: "val/loss"
+ckpt_path: null
+seed: 42
+
+logger:
+  wandb:
+    project: "poc2mol"
+    entity: "cath"
+    group: "flow_zinc_pretrain"
+    job_type: "train"
+    tags: ["flow_matching", "stage_a", "zinc", "v2_11ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 12
+  # 4 forward-heavy validation batches for the 128-molecule sampling budget rather than 16
+  # tiny ones. Validation runs every 2000 steps, so the cost is negligible either way.
+  val_batch_size: 32
+  config:
+    batch_size: 64
+    # src/train.py derives accumulate_grad_batches from this and the world size, and
+    # OVERWRITES trainer.accumulate_grad_batches. 512 with 8 ranks x 64 gives accumulation
+    # 1, and holds the effective batch fixed if the run moves to fewer GPUs.
+    target_samples_per_batch: 512
+
+model:
+  # Nothing to drop: the pocket is already all-zero for every ZINC sample.
+  cond_dropout_prob: 0.0
+  # Sampling diagnostics stay ON here even though the model is unconditional. The
+  # divergence watchdog -- traj_rms_max, rms_ratio, out_of_range, max_abs_occ,
+  # occupied_frac -- asks "is this sample on-distribution", which needs no pocket, and
+  # val/restore/dice_t50 starts from the TRUE path at t=0.5 so the molecule's identity is
+  # already in x_t and restoring to it is a well-posed target unconditionally.
+  #
+  # This stage is exactly where the watchdog matters most: its only other signal is the
+  # flow loss falling, which is the reading that historically looked healthy while sampling
+  # was broken -- and this checkpoint seeds all three stage-B arms, so a field that samples
+  # off-distribution would cost ~10 h of downstream compute before anyone noticed.
+  #
+  # Read val/sample/dice differently here: it compares an unconditional sample against one
+  # specific held-out molecule, so it is a DISTRIBUTION check, not a quality score. Useful
+  # reference points from report.md 12g: dice(true, 180-deg-rotated copy) is ~0.18 and the
+  # regression model against a wrong pose is ~0.33. Near 0 means the samples are empty or
+  # garbage; 0.15-0.3 means they look like molecules of the right size in the right place.
+  # It is NOT the selection metric -- that stays val/loss, set below.
+  n_val_sample_pockets: 128
+  scheduler:
+    type: "cosine_with_min_lr"
+    num_warmup_steps: 2000
+    min_lr_rate: 0.1
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3
+    save_last: True
+    filename: "step_{step:06d}_valloss_{val/loss:.5f}"
+    auto_insert_metric_name: False
+    # Full checkpoints: this stage is long and worth resuming, and Adam state is not
+    # recoverable from weights. The EMA weights are what lands in `state_dict`; the online
+    # weights ride along in `raw_state_dict` so a resume is exact.
+    save_weights_only: False
+    save_on_train_epoch_end: False
+
+trainer:
+  devices: 8
+  # ZINC epochs are enormous (8.86M molecules), so validate on a step interval instead of
+  # an epoch boundary. `estimated_stepping_batches` needs max_steps to be finite for the
+  # cosine schedule to anneal where intended -- size it to the observed optimum, not to an
+  # arbitrary ceiling (report.md 19d).
+  max_steps: 60000
+  max_epochs: -1
+  val_check_interval: 2000
+  check_val_every_n_epoch: null
+  limit_val_batches: 100
+  precision: bf16-mixed

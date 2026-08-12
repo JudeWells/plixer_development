@@ -87,6 +87,10 @@ class Poc2MolInferenceBuilder:
         predicted_ramp_start_step: int = 0,
         predicted_ramp_end_step: int = 0,
         compute_dtype: torch.dtype = torch.float32,
+        generative_readout: str = "one_step",
+        generative_draws: int = 4,
+        generative_guidance: float = 3.0,
+        generative_steps: int = 50,
     ):
         self.voxel_config = voxel_config
         self.pad_token_id = pad_token_id
@@ -118,6 +122,21 @@ class Poc2MolInferenceBuilder:
         self.predicted_ligand_probability = predicted_ligand_probability
         self.predicted_ramp_start_step = predicted_ramp_start_step
         self.predicted_ramp_end_step = predicted_ramp_end_step
+        # How a GENERATIVE Poc2Mol is read out. Ignored for the regression model.
+        #
+        #   one_step  E[ligand | pocket] from a single network evaluation per draw. This is
+        #             the quantity the regression model is trained to emit, it scores far
+        #             better on Dice than a sample (0.372 vs 0.231 measured 2026-08-11), and
+        #             it costs `generative_draws` forwards instead of ~100 for a Heun
+        #             trajectory -- which is what makes it affordable INSIDE a training loop.
+        #   sample    a genuine draw from p(ligand | pocket). Use for the multi-hypothesis
+        #             evaluation, where several decoded draws are aggregated per pocket.
+        if generative_readout not in {"one_step", "sample", "mean_of_k"}:
+            raise ValueError(f"unknown generative_readout {generative_readout!r}")
+        self.generative_readout = generative_readout
+        self.generative_draws = generative_draws
+        self.generative_guidance = generative_guidance
+        self.generative_steps = generative_steps
         self.compute_dtype = compute_dtype
 
         self._voxelizer = None
@@ -207,8 +226,28 @@ class Poc2MolInferenceBuilder:
         # One forward pass for the whole batch. Running it on every sample and discarding
         # the ligand-only rows is cheaper than the gather/scatter, and keeps shapes static.
         with torch.no_grad():
-            predicted_logits = self.poc2mol_model.model(x=protein)
-            predicted = torch.sigmoid(predicted_logits)
+            if getattr(self.poc2mol_model, "is_generative", False):
+                # Flow-matching Poc2Mol: there is no logit map, so the density is produced
+                # by the configured readout and pushed back through a logit to be scored on
+                # the BCEDice scale the quality filter and `poc2mol_loss` are calibrated on.
+                # The clamp keeps a saturated voxel from an infinite BCE term.
+                if self.generative_readout == "sample":
+                    predicted = self.poc2mol_model.sample(
+                        protein=protein, n_steps=self.generative_steps,
+                        guidance_scale=self.generative_guidance)
+                else:
+                    predicted = self.poc2mol_model.predict_expected(
+                        protein=protein, mode=self.generative_readout,
+                        n_draws=self.generative_draws,
+                        guidance_scale=self.generative_guidance,
+                        n_steps=self.generative_steps)
+                predicted = predicted.to(ligand.dtype)
+                predicted_logits = torch.logit(
+                    predicted.float().clamp(1e-4, 1.0 - 1e-4)
+                )
+            else:
+                predicted_logits = self.poc2mol_model.model(x=protein)
+                predicted = torch.sigmoid(predicted_logits)
             losses = poc2mol_loss_per_sample(
                 predicted_logits, ligand, alpha=self.loss_alpha, beta=self.loss_beta
             )

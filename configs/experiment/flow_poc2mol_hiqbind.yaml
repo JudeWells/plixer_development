@@ -1,0 +1,93 @@
+# @package _global_
+# Stage B -- pocket-conditioned flow matching on HiQBind (parquet_v2, 11 channels).
+#
+# This is the experiment the branch exists for. The regression Poc2Mol predicts the
+# conditional mean of ligand density and is, measured against the rotation ladder,
+# equivalent to a ~27 deg rigid rotation of the truth (report.md 12g). A
+# sample from this model is a draw from p(ligand | pocket) instead, so there is no
+# averaging over poses to blur.
+#
+# THE NUMBER TO BEAT IS 0.5027 (n=1019, sem 0.0033) -- the regression model on the FULL
+# split, not report.md's 0.596 which is a different checkpoint on PLINDER pockets. Same pooled
+# soft Dice as scripts/adhoc_analysis/poc2mol_rotation_control.py.
+#
+# Run stage A (flow_zinc_pretrain) first and point `init_weights_from` at its best
+# checkpoint. init_weights_from, NOT ckpt_path: the new stage needs its own step counter,
+# warmup and cosine schedule (report.md 6).
+defaults:
+  - _self_
+  - override /data: poc2mol_hiqbind_v2_11ch
+  - override /model: poc2mol_flow
+  - override /trainer: default
+  - override /logger: wandb.yaml
+
+task_name: "flow_poc2mol_hiqbind"
+tags:
+  - "${task_name}"
+  - "flow_matching"
+  - "stage_b"
+  - "lr${model.lr}"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/sample/dice"
+ckpt_path: null
+# Set this to the stage-A checkpoint. Training from scratch on 9,872 clusters is the
+# ablation, not the intended run.
+init_weights_from: null
+seed: 42
+
+logger:
+  wandb:
+    project: "poc2mol"
+    entity: "cath"
+    group: "flow_poc2mol_hiqbind"
+    job_type: "train"
+    tags: ["flow_matching", "stage_b", "hiqbind", "v2_11ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 12
+  # Wider than the historical min(4, batch_size). val/sample/dice is budgeted in pockets,
+  # and 32 per batch turns that budget into 4 forward-heavy batches instead of 32 tiny ones.
+  val_batch_size: 32
+  config:
+    batch_size: 64
+    target_samples_per_batch: 512
+
+model:
+  visualise_val: false
+  # 10% of samples train the unconditional branch, which is what makes guidance available.
+  cond_dropout_prob: 0.1
+  config:
+    ligand_channels: 11
+    protein_channels: 4
+
+callbacks:
+  model_checkpoint:
+    # NOT val/loss. The flow MSE says how well velocities are predicted, not how good the
+    # samples are, and report.md 18h documents a run where checkpointing on a proxy metric
+    # actively selected a worse model.
+    monitor: "val/sample/dice"
+    mode: "max"
+    save_top_k: 3
+    save_last: True
+    filename: "epoch_{epoch:04d}_dice_{val/sample/dice:.4f}"
+    auto_insert_metric_name: False
+    save_weights_only: False
+    # Must be False: the EMA contract swaps the online weights back in at
+    # on_validation_epoch_end, and a train-epoch-end checkpoint would be written before
+    # validation had produced the metric it is selected on.
+    save_on_train_epoch_end: False
+
+trainer:
+  devices: 1
+  check_val_every_n_epoch: 1
+  val_check_interval: null
+  # ~19 optimiser steps per epoch at effective batch 512 over 9,872 clusters -- convert any
+  # step-denominated intuition into epochs before trusting it (report.md 18f).
+  max_epochs: 1200
+  precision: bf16-mixed

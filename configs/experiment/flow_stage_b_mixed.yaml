@@ -1,0 +1,97 @@
+# @package _global_
+# Stage B -- fine-tune the ZINC-pretrained flow model on HiQBind, keeping 50% ZINC.
+#
+# Differences from flow_poc2mol_hiqbind (the pocket-only version, now the ablation):
+#   * data is a 50/50 mixture, so the density prior from 8.86M molecules is not forgotten
+#     while p(ligand | pocket) is learned on 9,872 clusters;
+#   * a LONG warmup, because the incoming weights are a converged optimum of a different
+#     (unconditional) objective and stage A's LR has already decayed to its floor -- a
+#     short warmup would take a large step away from that optimum before the pocket
+#     channels have learned to mean anything;
+#   * losses are logged per source, train and val, so ZINC being forgotten is visible as
+#     its own curve rather than hidden inside an average.
+#
+# Set init_weights_from to stage A's best checkpoint. init_weights_from, NOT ckpt_path:
+# this stage needs its own step counter, warmup and cosine schedule (report.md 6).
+defaults:
+  - _self_
+  - override /data: poc2mol_flow_mixed_v2_11ch
+  - override /model: poc2mol_flow
+  - override /trainer: default
+  - override /logger: wandb.yaml
+
+task_name: "flow_stage_b_mixed"
+tags:
+  - "${task_name}"
+  - "flow_matching"
+  - "stage_b"
+  - "mixed50"
+  - "lr${model.lr}"
+  - "seed${seed}"
+
+train: True
+test: False
+optimized_metric: "val/sample/dice"
+ckpt_path: null
+init_weights_from: null
+seed: 42
+
+logger:
+  wandb:
+    project: "poc2mol"
+    entity: "cath"
+    group: "flow_stage_b_mixed"
+    job_type: "train"
+    tags: ["flow_matching", "stage_b", "mixed50", "hiqbind", "zinc", "v2_11ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 10
+  prob_pocket: 0.5
+  val_batch_size: 32
+  config:
+    batch_size: 64
+    target_samples_per_batch: 512
+
+model:
+  visualise_val: false
+  cond_dropout_prob: 0.1
+  # Lower than the from-scratch arm's: these weights are already a converged optimum, and
+  # the job here is to specialise them rather than to find a basin.
+  lr: 5e-5
+  scheduler:
+    type: "cosine_with_min_lr"
+    # ~19 optimiser steps per pocket-epoch at effective batch 512, and an epoch here is
+    # 2x that in samples, so 1500 steps is roughly 40 epochs of warmup. Deliberately long:
+    # stage A finished with its LR annealed to the floor, so a short ramp would yank the
+    # weights away from that optimum before the pocket channels mean anything.
+    num_warmup_steps: 1500
+    min_lr_rate: 0.1
+    interval: "step"
+    frequency: 1
+  config:
+    ligand_channels: 11
+    protein_channels: 4
+
+callbacks:
+  model_checkpoint:
+    # Pinned to the POCKET set: val/sample/dice is logged unprefixed for hiqbind only, so
+    # this selects on the metric that matters and stays comparable with the control arm.
+    monitor: "val/sample/dice"
+    mode: "max"
+    save_top_k: 3
+    save_last: True
+    filename: "epoch_{epoch:04d}_dice_{val/sample/dice:.4f}"
+    auto_insert_metric_name: False
+    save_weights_only: False
+    save_on_train_epoch_end: False
+
+trainer:
+  devices: 2
+  check_val_every_n_epoch: 2
+  # An epoch is ~2x the pocket dataset (half the samples are ZINC), so an epoch costs about
+  # twice a pocket-only epoch in wall clock for the same number of pocket samples.
+  max_epochs: 600
+  precision: bf16-mixed
