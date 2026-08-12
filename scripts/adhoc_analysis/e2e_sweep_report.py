@@ -68,6 +68,40 @@ KEYS = [
 ]
 
 
+def smooth(values, window=3):
+    """Centred rolling mean, shrinking the window at the ends rather than dropping points."""
+    out = []
+    for i in range(len(values)):
+        lo = max(0, i - window // 2)
+        hi = min(len(values), i + window // 2 + 1)
+        out.append(float(np.mean(values[lo:hi])))
+    return out
+
+
+def check_noise(values):
+    """Per-check standard deviation, estimated from successive differences.
+
+    Var(x_t - x_{t-1}) = 2*sigma^2 when the checks are independent around a slowly-moving
+    level, so sigma = sd(diff)/sqrt(2). Using the raw sd instead would confuse the metric's
+    noise with the training trend it is sitting on.
+    """
+    if len(values) < 3:
+        return None
+    return float(np.std(np.diff(values), ddof=1) / np.sqrt(2))
+
+
+def selection_bias(sigma, n_draws):
+    """Roughly how much a MAXIMUM over n noisy draws exceeds the underlying level.
+
+    E[max of n standard normals] ~ sqrt(2*ln(n)) for moderate n. This is why comparing
+    arms on "best AUC" compares luck as much as quality, and why the smoothed peak is the
+    number to read (CLAUDE.md §6).
+    """
+    if sigma is None or n_draws < 2:
+        return None
+    return float(sigma * np.sqrt(2 * np.log(n_draws)))
+
+
 def series(history, key):
     """(step, value) pairs for one key, dropping the rows where it was not logged."""
     out = [(row.get("trainer/global_step"), row.get(key)) for row in history]
@@ -109,40 +143,55 @@ def main():
 
     data = fetch(args.entity_project, runs)
 
-    print("=" * 92)
+    print("=" * 100)
     print("PER-ARM SUMMARY   (dice is pooled soft Dice on hiqbind_val; baseline 0.5027)")
-    print("=" * 92)
-    header = (f"{'arm':<15}{'state':<10}{'step':>6}{'bestAUC':>9}{'@step':>7}"
-              f"{'finalAUC':>9}{'dice@best':>10}{'finalDice':>10}{'zincLoss':>9}")
+    print("  smoothAUC = peak of a centred 3-check rolling mean. READ THIS ONE, not rawBest:")
+    print("  rawBest is a maximum over ~16 noisy draws and is inflated by roughly `bias`.")
+    print("=" * 100)
+    header = (f"{'arm':<14}{'state':<9}{'step':>6}{'rawBest':>9}{'smoothAUC':>10}{'@step':>7}"
+              f"{'sigma':>7}{'bias':>7}{'peakDice':>9}{'lastDice':>9}{'zinc':>8}")
     print(header)
-    print("-" * 92)
+    print("-" * 100)
 
     best = {}
     for name, _ in runs:
         entry = data[name]
         auc, dice = entry["auc"], entry["dice"]
         if not auc:
-            print(f"{name:<15}{entry['state']:<10}{'-':>6}  no validation logged yet")
+            print(f"{name:<14}{entry['state']:<9}{'-':>6}  no validation logged yet")
             continue
-        best_step, best_auc = max(auc, key=lambda p: p[1])
-        final_step, final_auc = auc[-1]
-        dice_at_best = next((v for s, v in dice if s == best_step), None)
-        final_dice = dice[-1][1] if dice else None
+        steps = [s for s, _ in auc]
+        values = [v for _, v in auc]
+        smoothed = smooth(values)
+        raw_best = max(values)
+        peak_ix = int(np.argmax(smoothed))
+        sigma = check_noise(values)
+        bias = selection_bias(sigma, len(values))
+        dice_map = dict(dice)
+        # Dice at the SMOOTHED peak -- the checkpoint that step actually corresponds to.
+        peak_dice = dice_map.get(steps[peak_ix])
+        last_dice = dice[-1][1] if dice else None
         zinc = entry["summary"].get("val/zinc/loss")
-        best[name] = {"auc": best_auc, "step": best_step, "final_auc": final_auc,
-                      "dice": dice_at_best, "final_dice": final_dice}
-        print(f"{name:<15}{entry['state']:<10}{final_step:>6}{fmt(best_auc,9)}{best_step:>7}"
-              f"{fmt(final_auc,9)}{fmt(dice_at_best,10)}{fmt(final_dice,10)}"
-              f"{fmt(zinc,9,5) if zinc is not None else '':>9}")
+        best[name] = {"auc": smoothed[peak_ix], "raw": raw_best, "step": steps[peak_ix],
+                      "dice": peak_dice, "final_dice": last_dice, "sigma": sigma}
+        print(f"{name:<14}{entry['state']:<9}{steps[-1]:>6}{fmt(raw_best,9)}"
+              f"{fmt(smoothed[peak_ix],10)}{steps[peak_ix]:>7}"
+              f"{fmt(sigma,7,4) if sigma else '':>7}{fmt(bias,7,4) if bias else '':>7}"
+              f"{fmt(peak_dice,9)}{fmt(last_dice,9)}"
+              f"{fmt(zinc,8,5) if zinc is not None else '':>8}")
 
     print()
     print("=" * 92)
     print("LADDER CONTRASTS   (each rung adds exactly one thing to the one below)")
     print("=" * 92)
+    # The third rung differs between rounds: round 1 loosened the anchor, round 2 tightens
+    # it. Both are stated against arm B, so whichever is present is the one that prints.
     contrasts = [
         ("D-control", "Z-frozen", "unfreezing Poc2Mol (voxel loss only)"),
         ("B-balanced", "D-control", "*** THE LM GRADIENT REACHING POC2MOL ***"),
+        ("A-anchored3", "B-balanced", "tightening the density anchor 1.0 -> 3.0"),
         ("C-lm-dominant", "B-balanced", "loosening the density anchor 1.0 -> 0.1"),
+        ("A-anchored3", "Z-frozen", "anchored end-to-end vs the frozen baseline"),
     ]
     for upper, lower, label in contrasts:
         if upper in best and lower in best:
@@ -152,8 +201,16 @@ def main():
             print(f"      dAUC = {d_auc:+.4f}    dDice = {d_dice:+.4f}   "
                   f"({upper} {best[upper]['auc']:.4f} vs {lower} {best[lower]['auc']:.4f})")
     print()
-    print("  Reference points: the metric is noisy at +-0.02 between adjacent checks, so a")
-    print("  contrast below ~0.02 is not a result. Parameter-free composition readout = 0.7615.")
+    sigmas = [b["sigma"] for b in best.values() if b.get("sigma")]
+    if sigmas:
+        pooled = float(np.mean(sigmas))
+        # Two arms' smoothed peaks differ meaningfully only if the gap clears the noise on
+        # the difference. Smoothing over 3 checks divides the variance by ~3, and comparing
+        # two arms doubles it again.
+        threshold = 1.96 * pooled * np.sqrt(2.0 / 3.0)
+        print(f"  Per-check sigma across arms = {pooled:.4f}. A contrast between SMOOTHED peaks")
+        print(f"  needs to clear ~{threshold:.4f} to be worth anything at one seed.")
+    print("  Parameter-free composition readout = 0.7615 (§14d).")
 
     print()
     print("=" * 92)
