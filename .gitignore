@@ -17,3 +17,7 @@ data/crossdocked_test/
 data/agonists/
 data/cache_round1_smiles_all_out_hits_and_others.csv
 bindingdb_filtering_summary.json
+
+# Release bundles: multi-GB weights, not for git. Rebuild with
+# scripts/package_ensemble_release.py
+release/
