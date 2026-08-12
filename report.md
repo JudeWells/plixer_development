@@ -2684,3 +2684,33 @@ statement.
 **Comparison with §12d's 0.785:** that figure was ROW-standardised while the metric
 z-normalises by column, which §20 measured as ~+0.005 of inflation, so its like-for-like value
 is ~0.780. 0.7883 here is computed with the correct normalisation throughout.
+
+## 25. Frozen-baseline hyperparameter sweep — nothing beats it (2026-08-12)
+
+Four arms, each ONE change from arm Z (two seeds, 0.7601/0.7618, mean 0.7610). Smoothed peaks,
+threshold ~0.0127 at one seed per arm.
+
+| arm | change | AUC | vs Z | val/zinc/loss |
+|---|---|---|---|---|
+| Z | *baseline* | 0.7601 | — | 0.0023 |
+| **S1** | schedule 4000 -> **1500** steps | **0.7628** | +0.0027 | 0.0023 |
+| S2 | decoder lr 5e-5 -> **2e-5** | 0.7475 | −0.0126 | 0.0022 |
+| S4 | prob_poc2mol 0.5 -> **0.8** | 0.7479 | −0.0122 | 0.0034 |
+| S3 | weight_decay 0.1 + **dropout 0.1** | 0.7364 | −0.0237 | **0.0375** |
+
+**Nothing beats the baseline.** S2, S3 and S4 all clear the threshold in the WRONG direction.
+This is consistent with §14d's 24-hyperparameter sweep landing within noise, now confirmed at
+~3x finer resolution (deterministic validation + smoothed peaks) rather than assumed.
+
+**S1 is the one useful result: identical quality for 2.7x less compute.** Arm Z peaks at step
+~750 in both seeds and declines over the remaining 3250; compressing the schedule to 1500 steps
+loses nothing. It also REFUTES the §19d hypothesis it was built to test — the peak did not move
+or rise, so the ~750-step optimum is intrinsic to the fine-tune and not an artefact of an anneal
+sized to `max_steps`. **Budget replicates, not steps**: every 4000-step run in this project
+spent 80% of its compute past its own optimum.
+
+⚠️ **S3's regularisation broke the ligand-only ability**: `val/zinc/loss` 0.0023 -> **0.0375**,
+a 16x degradation, while pocket AUC fell 0.024. Dropout 0.1 on a decoder whose dropout has
+always been 0.0 is evidently not a free knob. Worth remembering that the overfitting reading of
+the step-750 peak — plausible at 172.7M parameters over 9,872 clusters — is now the *third*
+explanation for that shape to fail, after schedule length (S1) and learning rate (S2).
