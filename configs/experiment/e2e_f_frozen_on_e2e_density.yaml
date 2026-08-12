@@ -1,0 +1,46 @@
+# @package _global_
+# ARM F -- THE DECISIVE ONE. Arm Z, but on the density arm B *produced*.
+#
+# Identical to e2e_z_frozen in every respect -- upstream frozen at lr 0 under .eval(), no
+# voxel loss, LM gradient severed, fresh stage-1 decoder -- with ONE difference: the frozen
+# upstream is the Poc2Mol that arm B trained end-to-end for 4000 steps, extracted with
+# scripts/adhoc_analysis/extract_poc2mol_from_e2e.py, instead of the original
+# poc2mol_v2_11ch_ep576.
+#
+# WHY THIS IS THE EXPERIMENT THAT MATTERS. Every end-to-end arm so far has landed ~0.010-0.015
+# BELOW the frozen baseline, and rounds 2-3 ruled out the obvious explanations one at a time:
+#   * not density collapse -- Dice ENDS ABOVE the starting checkpoint (0.5104-0.5122 vs 0.5028)
+#   * not a weak anchor    -- A (weight 3.0) - B = -0.0043, deep inside the noise
+#   * not target speed     -- E (lr 1e-5) - B = -0.0066, no better, and barely quieter
+# What remains is a moving-target confound: the decoder is chasing a distribution that keeps
+# shifting, which shows up as ~2x the per-check validation noise in every arm whose upstream
+# moves. If that is the whole story, then B's density may be perfectly good -- possibly
+# BETTER, since it reconstructs better -- and only ever measured through a decoder that never
+# got to converge on it.
+#
+# This arm removes the confound entirely. F vs Z is a clean A/B on the density alone: same
+# decoder init, same schedule, same data, both upstreams frozen and stationary.
+#
+#   F > Z  ->  end-to-end DID improve the density; the loss was entirely the moving target,
+#             and the recipe becomes "train end-to-end, freeze, then fine-tune the decoder".
+#   F ~ Z  ->  end-to-end changed the density without improving what the decoder can read
+#             from it. Reconstruction went up (Dice 0.5122) and usable signal did not, which
+#             would be a sharp restatement of §8/§14d: the density is not the constraint.
+#   F < Z  ->  end-to-end actively damaged the density in a way Dice cannot see.
+#
+# All three outcomes are worth having, which is what makes this worth a run.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_f_frozen_on_e2e_density"
+tags: ["${task_name}", "e2e", "arm_f", "v2", "11ch", "seed${seed}"]
+
+# The decoder still starts from stage 1, exactly as arm Z does -- `init_weights_from` is
+# inherited from e2e_base and carries no poc2mol.* keys, so it loads with strict=False and
+# leaves the upstream below untouched.
+model:
+  poc2mol_ckpt_path: checkpoints/e2e_b_r3_poc2mol_step3999.ckpt
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false

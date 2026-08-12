@@ -1,0 +1,41 @@
+# @package _global_
+# ARM G -- arm F's companion: the same test, on arm D's density.
+#
+# F freezes the density arm B produced (voxel loss + LM gradient). G freezes the density arm
+# D produced (voxel loss ONLY, LM gradient severed). Both are evaluated exactly as arm Z is:
+# fresh stage-1 decoder, upstream frozen and stationary, everything else identical.
+#
+# Together the three arms form a clean A/B/C on the DENSITY alone, with the moving-target
+# confound removed from all of them:
+#
+#     Z   original poc2mol_v2_11ch_ep576      Dice 0.5028
+#     G   + 4000 steps of voxel loss only     Dice ~0.507
+#     F   + 4000 steps of voxel + LM gradient Dice ~0.512
+#
+# and so:
+#     G - Z   what further ordinary Poc2Mol training does to downstream usability
+#     F - G   what the LANGUAGE-MODELLING GRADIENT SPECIFICALLY contributed to the density
+#
+# F - G is the cleanest statement of this branch's thesis that the data can support. The
+# in-training contrast B - D asks the same question, but both of its arms were measured
+# through a decoder chasing a shifting input, which cost them ~2x the validation noise and
+# an unknown amount of headroom. Here both densities are frozen, so the comparison is
+# between two stationary conditions and the noise should fall back to the frozen arms'
+# ~0.008.
+#
+# Note the ordering these three impose is a real prediction, not a formality: Dice ranks them
+# Z < G < F. If downstream AUC ranks them differently -- in particular if it INVERTS -- that
+# is direct evidence for §8/§14d, that reconstruction quality and decoder-usable signal are
+# not the same axis, measured on three densities that differ only in how they were trained.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_g_frozen_on_voxelonly_density"
+tags: ["${task_name}", "e2e", "arm_g", "v2", "11ch", "seed${seed}"]
+
+model:
+  poc2mol_ckpt_path: checkpoints/e2e_d_r3_poc2mol_step3999.ckpt
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false
