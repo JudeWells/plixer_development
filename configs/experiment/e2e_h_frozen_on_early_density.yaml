@@ -1,0 +1,38 @@
+# @package _global_
+# ARM H -- arm F, but on B's density taken at step 1000 instead of step 4000.
+#
+# A second point on the drift curve. F and G established, with both upstreams frozen and the
+# moving-target confound removed, that:
+#
+#     G - Z  =  -0.0252   further VOXEL-ONLY upstream training, and its Dice went UP (+0.004)
+#     F - G  =  +0.0128   what the LM gradient added back
+#     F - Z  =  -0.0124   net, still below the original density
+#
+# So training the upstream further hurts downstream whatever the objective, the LM gradient
+# offsets roughly half the damage, and reconstruction Dice moves the OPPOSITE way from
+# usability throughout (Dice ranks Z < G < F; AUC ranks G < F < Z).
+#
+# If damage accumulates with drift, then less drift should mean less damage -- and since the
+# LM gradient's contribution is positive, a lightly-drifted end-to-end density is the one
+# place a WIN over the frozen baseline could still be hiding. Step 1000 is a quarter of the
+# training F's density received.
+#
+#   H > Z   there is an optimum at small drift; end-to-end pays if you stop early. This is
+#           the only remaining route to beating the baseline found so far.
+#   H ~ F   damage does not scale with drift; it arrives early and saturates.
+#   H < F   more drift is better, which would invert the story and want explaining.
+#
+# Cheap: the checkpoint already exists, so this costs one 2 h run and no new training of the
+# upstream at all.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_h_frozen_on_early_density"
+tags: ["${task_name}", "e2e", "arm_h", "v2", "11ch", "seed${seed}"]
+
+model:
+  poc2mol_ckpt_path: checkpoints/e2e_b_r3_poc2mol_step1000.ckpt
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false

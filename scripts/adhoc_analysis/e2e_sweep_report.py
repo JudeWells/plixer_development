@@ -207,6 +207,11 @@ def main():
         ("E-slow-upstream", "B-balanced", "slowing the upstream 1e-4 -> 1e-5"),
         ("E-slow-upstream", "Z-frozen", "slow end-to-end vs the frozen baseline"),
         ("A-anchored3", "Z-frozen", "anchored end-to-end vs the frozen baseline"),
+        # Density arms: all three upstreams frozen and stationary, same decoder init, so
+        # these contrasts are about the DENSITY alone with no moving target anywhere.
+        ("G-Ddensity", "Z-frozen", "further voxel-only upstream training (density frozen)"),
+        ("F-Bdensity", "G-Ddensity", "*** WHAT THE LM GRADIENT ADDED TO THE DENSITY ***"),
+        ("F-Bdensity", "Z-frozen", "end-to-end density vs original, both frozen"),
     ]
     for upper, lower, label in contrasts:
         if upper in best and lower in best:
