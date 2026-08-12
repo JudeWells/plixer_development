@@ -2625,3 +2625,62 @@ to four seeds would settle it either way.
 (AUC falling as Dice rose across four points); at two seeds H drops below Z despite lower
 Dice, and the ordering breaks. The honest version is the two-point one: heavy drift is worse,
 low drift is indistinguishable from no drift.
+
+---
+
+## 24. Ensembling + mass/decoder fusion — 0.7883, the best number in the project (2026-08-12)
+
+`scripts/adhoc_analysis/fusion_ensemble.py`. 6 end-to-end checkpoints x 4 augmentation
+replicates = 24 members, 104-pocket PLINDER panel, 105 candidates, deterministic pocket
+selection with rotation ON for the augmentation axis. Members are COLUMN z-normalised before
+averaging or blending, matching the metric.
+
+Checkpoints span arms Z (original density), I (drift-500 density) and H (drift-1000 density),
+two seeds each — so the member set is diverse in decoder weights AND in upstream density,
+which §20 found is the diversity that pays.
+
+| | decoder | composition |
+|---|---|---|
+| single member | 0.7367 (sd 0.0143) | 0.7246 (sd 0.0182) |
+| + augmentation (x4) | 0.7546 (+0.0179) | 0.7360 (+0.0114) |
+| + checkpoint (x6) | 0.7758 (+0.0391) | 0.7393 (+0.0147) |
+| + both (24) | **0.7818** (+0.0451) | 0.7408 (+0.0162) |
+
+**FUSION of the two fully-ensembled readouts** — the axis §20 named as untested:
+
+| w_composition | 0.0 | 0.1 | **0.2** | 0.3 | 0.4 | 0.5 | 1.0 |
+|---|---|---|---|---|---|---|---|
+| AUC | 0.7818 | 0.7863 | **0.7883** | 0.7881 | 0.7858 | 0.7850 | 0.7408 |
+
+**0.7883 against a single deterministic checkpoint's 0.7612 on the same panel: +0.027.**
+
+Reading, in order of how much each axis bought:
+
+* **Checkpoint ensembling is the big one, +0.039.** Consistent with §20's +0.030 on the
+  composition readout alone.
+* **Augmentation is worth +0.018 alone but only +0.006 on top of checkpoints** (0.7758 ->
+  0.7818). Strongly sub-additive, exactly as §20 measured (+0.0023 there). Do checkpoint
+  ensembling first; augmentation is what you reach for when you have one model.
+* **Fusion adds +0.0065 on top of the full ensemble**, and the optimum is at
+  w_composition = 0.2, not the 50/50 of §12d.
+
+⚠️ **The two readouts are much LESS orthogonal here than §12d measured.** Within-pocket
+`corr(decoder, composition)` = **+0.547**, against +0.024 on the 9ch/v1 pipeline. That is the
+mechanism behind both differences above: more correlated readouts mean a smaller fusion gain
+(+0.0065 here vs +0.024 there) and an optimum weighted towards the stronger member rather
+than 50/50. Do not carry §12d's r = +0.024 across pipelines.
+
+⚠️ **The composition readout is much weaker here than the decoder** (0.7408 vs 0.7818
+ensembled), where §12a had it *stronger* (0.761 vs 0.722). Note §12b's finding that S, Cl, Br
+and I carry no signal at all — with the 11-channel scheme the readout has more dead channels
+to average over, which is a plausible cause and is worth checking before assuming the readout
+is simply worse.
+
+⚠️ **w = 0.2 was chosen on the panel it is scored on**, so 0.7883 carries a little selection
+optimism. The curve is flat though — anything in w = 0.1-0.3 gives >= 0.786 — so the effect
+is not a knife-edge, and quoting 0.786 for a pre-committed w = 0.2 would be the conservative
+statement.
+
+**Comparison with §12d's 0.785:** that figure was ROW-standardised while the metric
+z-normalises by column, which §20 measured as ~+0.005 of inflation, so its like-for-like value
+is ~0.780. 0.7883 here is computed with the correct normalisation throughout.
