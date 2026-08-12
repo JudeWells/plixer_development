@@ -1,0 +1,24 @@
+# @package _global_
+# SWEEP S3 -- actually regularise the decoder.
+#
+# 172.7M parameters over 9,872 HiQBind clusters is ~17,500 parameters per cluster, and the
+# peak-then-long-decline shape is what overfitting looks like. Yet dropout is 0.0 on both
+# paths and weight_decay has never been a deliberate choice -- CLAUDE.md records that every
+# run before 2026-08-10 silently used AdamW's 0.01 default because the parameter was never
+# passed. This turns both on: wd 0.1 and dropout 0.1.
+#
+# Deliberately moves two knobs at once. They are the same hypothesis (the decoder is
+# overfitting), the sweep is powered to detect ~0.012 at one seed, and splitting them costs a
+# GPU pair for a distinction that only matters if the combined arm wins.
+defaults:
+  - e2e_z_frozen
+  - _self_
+
+task_name: "sweep_s3_regularised"
+tags: ["${task_name}", "sweep", "frozen", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    weight_decay: 0.1
+    hidden_dropout_prob: 0.1
+    attention_probs_dropout_prob: 0.1

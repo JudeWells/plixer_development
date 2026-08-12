@@ -1,0 +1,21 @@
+# @package _global_
+# SWEEP S4 -- shift the training mixture towards pockets (prob_poc2mol 0.5 -> 0.8).
+#
+# Half of every batch is ZINC, which carries no pocket at all, so only half of each batch
+# trains the thing being measured. The counter-argument is that HiQBind is only 9,872 clusters
+# and ZINC is what keeps the decoder's chemistry general -- val/zinc/loss is the tripwire for
+# that, and it sits at ~0.0023 across every arm so far, so there is room to find out.
+#
+# This is the one arm here that changes the DATA rather than the optimiser, which makes it the
+# most likely of the four to move a metric that 24 previously-swept decoder hyperparameters
+# could not (§14d).
+defaults:
+  - e2e_z_frozen
+  - _self_
+
+task_name: "sweep_s4_more_pockets"
+tags: ["${task_name}", "sweep", "frozen", "v2", "11ch", "seed${seed}"]
+
+data:
+  train_dataset:
+    prob_poc2mol: 0.8

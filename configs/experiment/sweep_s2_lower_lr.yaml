@@ -1,0 +1,16 @@
+# @package _global_
+# SWEEP S2 -- halve the decoder learning rate (5e-5 -> 2e-5).
+#
+# The other reading of "peaks at step 749 then declines": the decoder is simply moving too
+# fast for 9,872 clusters and blows past its optimum. S1 shortens the schedule; this slows the
+# steps instead, keeping the full 4000 so the two are distinguishable rather than confounded.
+defaults:
+  - e2e_z_frozen
+  - _self_
+
+task_name: "sweep_s2_lower_lr"
+tags: ["${task_name}", "sweep", "frozen", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    lr: 2e-5

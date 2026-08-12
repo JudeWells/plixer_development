@@ -1,0 +1,29 @@
+# @package _global_
+# SWEEP S1 -- size the schedule to the OBSERVED optimum, not to max_steps.
+#
+# Arm Z peaked at step 749 in BOTH seeds and then declined for 3250 more steps. Its LR anneal
+# runs 2000->4000, so the model spends its entire decay phase past its own optimum -- exactly
+# the §19d trap, where sizing decay to max_steps instead of the observed peak cost a run its
+# anneal and fixing it was worth +15% Tanimoto.
+#
+# Here the whole schedule is compressed to 1500 steps (100 warmup / 400 stable / 1000 decay)
+# so the anneal lands ON the optimum rather than 3000 steps beyond it. val_check_interval
+# drops to 500 micro-batches (= 125 optimiser steps at accumulate 4) to keep ~12 validations,
+# which the smoothed-peak readout needs.
+defaults:
+  - e2e_z_frozen
+  - _self_
+
+task_name: "sweep_s1_short_schedule"
+tags: ["${task_name}", "sweep", "frozen", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    scheduler:
+      num_warmup_steps: 100
+      num_stable_steps: 400
+      num_decay_steps: 1000
+
+trainer:
+  max_steps: 1500
+  val_check_interval: 500
