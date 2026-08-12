@@ -30,9 +30,22 @@ import wandb
 
 # Order matters: it is the ladder, bottom rung first.
 #
-# ROUND 2 (2026-08-12 16:38). The live sweep. Arm C (anchor 0.1) is replaced by arm A
-# (anchor 3.0), which pulls the balance the other way -- see e2e_a_anchored_hard.yaml.
+# ROUND 3 (2026-08-12 17:20). The live sweep. Early stopping disabled so every arm runs the
+# full 4000 steps and completes the LR anneal (§23f). Arm A (anchor 3.0) is replaced by arm E
+# (poc2mol_lr 1e-5): round 2 showed anchor strength does nothing (A-B = -0.004) while both
+# moving-upstream arms ended with Dice ABOVE the frozen baseline yet worse AUC, which points
+# at a moving-target problem rather than a density-quality one. See e2e_e_slow_upstream.yaml.
 DEFAULT_RUNS = [
+    ("Z-frozen", "5vcgm5tc"),
+    ("D-control", "cidxmees"),
+    ("B-balanced", "en8a9lnx"),
+    ("E-slow-upstream", "su6pa5bf"),
+]
+
+# ROUND 2 (2026-08-12 16:38). Complete, but arms early-stopped at different steps (§23f):
+# Z at 2999, B at 2499, D and A at the full 3999. Inspect with:
+#   --runs Z-frozen=uxufh43w D-control=1e3ptob7 B-balanced=0d5u8ufc A-anchored3=1l41jx1d
+ROUND_2_RUNS = [
     ("Z-frozen", "uxufh43w"),
     ("D-control", "1e3ptob7"),
     ("B-balanced", "0d5u8ufc"),
@@ -191,6 +204,8 @@ def main():
         ("B-balanced", "D-control", "*** THE LM GRADIENT REACHING POC2MOL ***"),
         ("A-anchored3", "B-balanced", "tightening the density anchor 1.0 -> 3.0"),
         ("C-lm-dominant", "B-balanced", "loosening the density anchor 1.0 -> 0.1"),
+        ("E-slow-upstream", "B-balanced", "slowing the upstream 1e-4 -> 1e-5"),
+        ("E-slow-upstream", "Z-frozen", "slow end-to-end vs the frozen baseline"),
         ("A-anchored3", "Z-frozen", "anchored end-to-end vs the frozen baseline"),
     ]
     for upper, lower, label in contrasts:

@@ -26,16 +26,30 @@ LOG="$LOG_DIR/${TASK}.log"
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 
-CUDA_VISIBLE_DEVICES="$GPUS" MASTER_PORT="$PORT" \
+# setsid, and NOT a plain `&`. A backgrounded job stays in this script's process group, so
+# anything that signals the group -- e.g. stopping the watcher that invoked this launcher --
+# kills the training run too. That is not hypothetical: it killed e2e_d_control_r3 mid-run
+# on 2026-08-12, with a BrokenPipeError on rank 0 and its rank-1 child left orphaned holding
+# 26 GB on a GPU. A run launched moments earlier survived only because its launcher had
+# already exited. `setsid` puts the job in its own session so it is immune.
+setsid env CUDA_VISIBLE_DEVICES="$GPUS" MASTER_PORT="$PORT" \
   ./venvPlixer/bin/python src/train.py \
     experiment="$ARM" \
     task_name="$TASK" \
     trainer.devices=2 \
     logger.wandb.group="e2e_${ROUND}" \
     "$@" \
-  > "$LOG" 2>&1 &
+  > "$LOG" 2>&1 < /dev/null &
 
-PID=$!
+# $! is setsid's pid, which is not the python process, so resolve the real one. Matching on
+# `task_name=$TASK` is safe here even given CLAUDE.md §6's warning that such patterns match
+# the invoking shell: this script's own command line carries the ARM name, never the
+# `task_name=` assignment, and TASK is unique per run because it embeds the round tag.
+sleep 8
+PID=$(pgrep -f "task_name=${TASK}" | head -1)
+if [ -z "$PID" ]; then
+  echo "LAUNCH FAILED -- no process for $TASK. Last 25 lines:"; tail -25 "$LOG"; exit 1
+fi
 echo "$PID  $TASK  gpus=$GPUS" >> "$LOG_DIR/pids.txt"
 echo "launched $TASK on GPUs $GPUS (pid $PID), log $LOG"
 

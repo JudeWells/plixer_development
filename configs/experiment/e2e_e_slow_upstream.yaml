@@ -1,0 +1,42 @@
+# @package _global_
+# ARM E -- arm B with the upstream moving TEN TIMES SLOWER (poc2mol_lr 1e-5).
+#
+# This replaces the queued re-run of arm A, because round 2 finished and killed arm A's
+# hypothesis while raising a better one.
+#
+# WHAT ROUND 2 ACTUALLY SHOWED. Final pooled Dice on hiqbind_val, against the frozen
+# baseline's 0.5028:
+#     D control (voxel loss only)   0.5103
+#     A anchored 3.0                0.5105
+# Both arms whose upstream trained ended with a density that RECONSTRUCTS BETTER than the
+# checkpoint they started from -- and both scored WORSE on likelihood AUC than the frozen
+# baseline (0.7377 and 0.7431 against 0.7595). The density is not degrading. Tightening the
+# anchor did nothing either: A - B = -0.0043, an order of magnitude inside the noise floor.
+#
+# So the "density collapses into a private code for the decoder" failure mode CLAUDE.md
+# warned about is NOT what is happening, and neither is "the anchor is too weak" (my round-2
+# hypothesis -- wrong). What is left is a moving-target problem: the decoder was fine-tuned
+# on one density distribution and the upstream keeps shifting it underneath. Two independent
+# signatures support that reading:
+#   * every arm with a moving upstream carries ~2x the per-check validation sigma of the
+#     frozen ones (0.013-0.016 vs 0.008), which is what a non-stationary input looks like;
+#   * D and A ran the FULL 4000 steps and still peaked at step 749 and 1249, then declined.
+#     The LR anneal did not rescue either. They are not undertrained; they are chasing.
+#
+# THE TEST. If the decoder cannot track a target moving at poc2mol_lr 1e-4, slow the target.
+# 1e-5 is the rate I dropped from round 1 to make room for the frozen baseline, and it is now
+# the best-motivated knob in the experiment rather than a hedge. Prediction if the reading is
+# right: E lands ABOVE B and D, and its validation sigma sits closer to the frozen arms'.
+# If E looks just like B, the problem is not the speed of the target and end-to-end training
+# is simply not paying for itself at this scale.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_e_slow_upstream"
+tags: ["${task_name}", "e2e", "arm_e", "r3", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-5
+  lm_grad_to_poc2mol: true
