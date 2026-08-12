@@ -1,0 +1,33 @@
+# @package _global_
+# ARM A -- arm B with the density anchored HARDER (voxel_loss_weight 3.0 instead of 1.0).
+#
+# This replaces round 1's arm C, which pulled the anchor the other way (0.1) and was the
+# clearest loser: best AUC 0.7483 against 0.7658 for arm B and 0.7655 for the frozen
+# baseline, and it was the first arm to stop improving. Round 1 also showed pooled Dice
+# falling in every arm whose upstream was allowed to move (0.5028 -> 0.48-0.50) WITHOUT a
+# compensating gain in ranking AUC. Both point the same way: the constraint is not that the
+# reconstruction loss is holding Poc2Mol back, it is that too little is holding it in place.
+#
+# Calibration for why 3.0 and not 10. Measured gradient norms into Poc2Mol at batch 32:
+# the LM term contributes 16.6 and the reconstruction term 9.5 per unit weight. So
+#     w = 0.1  ->  LM outweighs reconstruction ~17:1   (round 1 arm C, worst)
+#     w = 1.0  ->  LM still outweighs it      ~1.7:1   (round 1 arm B)
+#     w = 3.0  ->  reconstruction leads       ~1.7:1   (HERE -- the mirror image of B)
+#     w = 10   ->  reconstruction leads        ~5.7:1  (approaches arm D, i.e. no LM signal)
+# 3.0 is the smallest weight that actually flips which loss leads, which makes A and B a
+# symmetric pair about the crossover rather than an arbitrary pair of numbers.
+#
+# ⚠️ Round 1 caveat: those numbers come from runs truncated by the val-cadence bug fixed in
+# e2e_base.yaml, so they are an EARLY-TRAINING read, not a verdict. This arm is a hypothesis
+# to test, not a conclusion already reached.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_a_anchored_hard"
+tags: ["${task_name}", "e2e", "arm_a", "r2", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 3.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true

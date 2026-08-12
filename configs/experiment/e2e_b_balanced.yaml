@@ -1,0 +1,29 @@
+# @package _global_
+# ARM B -- THE HUB. Both supervisions at full strength, upstream at its native rate.
+#
+# voxel_loss_weight 1.0 is Poc2Mol's own objective unchanged, so the LM gradient is a pure
+# addition to it. poc2mol_lr 1e-4 is the rate Poc2Mol was actually trained at.
+#
+# The four arms form a ladder, each rung adding exactly one thing to the one below, which is
+# what makes the set readable:
+#   Z  frozen upstream                       -- the baseline (stage 3, in this val regime)
+#   D  + upstream trains on its voxel loss   -- isolates the effect of merely unfreezing
+#   B  + the LM gradient reaches it (HERE)   -- isolates the end-to-end gradient itself
+#   C  + the density anchor loosened to 0.1  -- isolates the loss balance
+# So B - D is the measurement this whole branch exists to make.
+#
+# Measured calibration (smoke test, batch 32, 16 pocket rows): with the density anchored at
+# weight 1.0 the LM gradient arriving at Poc2Mol already has a LARGER norm than the
+# reconstruction gradient -- 16.6 against 9.5. So even this arm is LM-led, and arm C is very
+# much so. That is worth remembering before reading a Dice drop as a surprise.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_b_balanced"
+tags: ["${task_name}", "e2e", "arm_b", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true

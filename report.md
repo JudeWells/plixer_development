@@ -2408,3 +2408,118 @@ compute relative to attacking the density or the readout.
   (separability 0.07, §10b), so atom positions are destroyed before any model sees the
   target, and it caps every downstream metric equally. `sum` with `radius_scale < 1` exists
   in the config and has never been tried.
+
+---
+
+## 23. End-to-end training — the gradient path, and two bugs it exposed (2026-08-12)
+
+Branch `end-to-end`. Goal per CLAUDE.md §0: let the language-modelling loss backpropagate
+through Poc2Mol, with supervision at BOTH the voxel and the token layer.
+
+### 23a. The gradient path is open, and verified
+
+`Poc2Mol` ran in `Vox2SmilesDataModule.on_after_batch_transfer` — a datamodule hook outside
+the autograd graph, under `torch.no_grad()`, with `_bind` calling `requires_grad_(False)`.
+Three independent severances; removing any one alone does nothing.
+
+New code:
+
+| file | role |
+|---|---|
+| `src/models/end_to_end.py` | `EndToEndPoc2Smiles`, **subclasses `VoxToSmilesModel`** so the likelihood-AUC machinery (pocket×candidate matrix, cross-rank all-gather, column z-norm) is inherited verbatim rather than reimplemented |
+| `src/data/vox2smiles/end_to_end.py` | `EndToEndVoxelBuilder` — voxelises only, returns `protein_voxels` / true `ligand_voxels` / `has_pocket`; `pixel_values` is assembled inside the model |
+| `configs/model/end_to_end.yaml`, `configs/data/vox2smiles_e2e_v2_11ch.yaml`, `configs/experiment/e2e_*.yaml` | the arms |
+
+Loss is `LM cross-entropy + voxel_loss_weight × BCEDice`, with AdamW param groups so the
+upstream carries its own learning rate.
+
+**Measured, not assumed** (smoke test, batch 32, 16 pocket rows):
+
+| condition | Poc2Mol grad norm |
+|---|---|
+| LM loss only (`voxel_loss_weight = 0`) | **16.6** |
+| voxel loss only | 9.5 |
+| LM gradient severed, no voxel loss | **exactly 0.0**, all 124 params still in the graph |
+
+So at `voxel_loss_weight = 1.0` the LM term already *outweighs* the reconstruction term
+1.7:1. `w = 3.0` is the smallest weight that flips which loss leads, which is why round 2
+uses it. Cost: 138 ms/batch, 13.7 GB, ~1.77 s/optimiser step at batch 32 on 2 GPUs.
+
+⚠️ **Freeze by zeroing the TERM, never by detaching.** A detached upstream leaves its
+parameters out of the backward pass and plain DDP rejects that outright. `voxel_loss * 0.0`
+keeps every parameter in the graph with a zero gradient — a real freeze that DDP accepts.
+
+⚠️ `save_hyperparameters(ignore=[...])` in a subclass does **not** undo the parent's call:
+it merges into the existing dict, so the parent's capture of the 117M-parameter
+`poc2mol_model` survives and gets pickled into every checkpoint. Pop the key explicitly.
+
+### 23b. 🚨 Stage-3 validation was STOCHASTIC — 0.7522 is not a like-for-like target
+
+`vox2smiles_combined_v2_11ch.yaml` overrides only `use_cluster_member_zero` and `data_path`
+on its val datasets, so they inherit `rotate: true, translation: 6.0` from
+`complex_dataset_v2_11ch.yaml`. Every stage-3 validation therefore scored a random
+augmentation — exactly what §6 forbids for model selection, and what
+`poc2mol_hiqbind_v2_11ch.yaml` fixed for Poc2Mol back on 2026-08-06 but was never carried
+across to the vox2smiles configs.
+
+Measured cost on the *same* checkpoint: pooled Dice **0.311 augmented vs 0.503
+deterministic**. And with deterministic validation the frozen baseline scores **0.7660**,
+*above* the published 0.7522 — the augmented validation was simply harder. Comparing new
+deterministic arms against 0.7522 would have manufactured a +0.014 win before the
+experiment started.
+
+**Consequence:** re-measure the baseline in your own validation regime. That is what arm Z
+is for. Do not quote against 0.7522 across a validation change.
+
+### 23c. 🚨 Three incompatible soft-Dice definitions are live in the codebase
+
+On one untouched batch of `poc2mol_v2_11ch_ep576`:
+
+| definition | value | where |
+|---|---|---|
+| per-sample, pooled over channels **and** space | **0.467** | `density_diagnostics.pooled_soft_dice` — the 0.5027 yardstick |
+| per-channel, pooled across the batch, then averaged | 0.311 | the obvious reading of "pooled Dice" |
+| per (sample, channel), then averaged | 0.194 | `compute_per_channel_dice`'s shape |
+
+The lower two are dragged down by the ~5 of 11 channels a typical ligand leaves empty, each
+contributing an unavoidable zero (§3c). **Always name which one you mean.** With the
+yardstick's definition, the frozen arm reads 0.5028 on the full val split against the
+documented 0.5027 — an exact independent confirmation that the e2e data path is correct.
+
+### 23d. 🚨 `val_check_interval` counts MICRO-batches — accumulation silently rescales it
+
+`exp1_s3_v2_11ch.yaml` uses `val_check_interval: 250` and is correct, because at
+`batch_size 64` on 4 devices its `accumulate_grad_batches` is 1. Round 1 copied that 250
+while dropping `batch_size` to 32 (needed for the U-Net backward), which makes
+`accumulate_grad_batches = 4` — so validation ran every **62 optimiser steps, not 250**, and
+`patience: 12` meant **750 steps, not 3000**.
+
+Result: arm C peaked at step 562 and was stopped at 1312, exactly 750 steps later. Every arm
+died between 1312 and 1374 of a nominal 4000, **none reached the LR anneal beginning at step
+2000**, and each accumulated ~21 validation draws feeding its "best" value instead of ~5
+(inflating the max-selection bias §6 warns about). Round 1 is an early-training snapshot
+only.
+
+`src/train.py` now emits a warning whenever `val_check_interval` is an int and
+`accumulate_grad_batches > 1`, spelling out the true cadence and the true patience in steps.
+
+### 23e. Round 1 result (TRUNCATED — read as an early-training snapshot)
+
+Ladder: Z frozen → D unfrozen on voxel loss only → B + LM gradient → C anchor loosened to
+0.1. All at `poc2mol_lr 1e-4`, effective batch 256, deterministic validation.
+
+| arm | best AUC | @step | Dice | contrast |
+|---|---|---|---|---|
+| Z frozen | **0.7660** | 937 | 0.5028 | baseline |
+| D control | 0.7586 | 1187 | 0.5017 | D−Z = −0.0074 |
+| B balanced | 0.7658 | 874 | 0.4806 | **B−D = +0.0073** |
+| C lm-dominant | 0.7483 | 562 | 0.4908 | C−B = −0.0176 |
+
+Every contrast is inside the ±0.02 noise band, so **nothing here is a result**. The one
+suggestive pattern, and the reason round 2 tightens rather than loosens the anchor: Dice
+fell in all three arms whose upstream could move, without a compensating AUC gain, and the
+loosest-anchor arm was the clearest loser. Nothing beat the frozen baseline.
+
+**Round 2** (running, W&B `uxufh43w` / `1e3ptob7` / `0d5u8ufc` / `1l41jx1d`) fixes the
+cadence and replaces C with `voxel_loss_weight 3.0`. Analysis:
+`scripts/adhoc_analysis/e2e_sweep_report.py`.

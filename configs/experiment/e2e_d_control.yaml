@@ -1,0 +1,22 @@
+# @package _global_
+# ARM D -- Poc2Mol unfrozen, but the LM gradient severed at its boundary.
+#
+# Poc2Mol keeps training on its own BCE+Dice loss alone while the decoder fine-tunes on the
+# density it produces. Exactly arm B with the end-to-end gradient removed, and exactly arm Z
+# with the upstream allowed to move.
+#
+# Without this arm the experiment cannot be read. A win from arm B over the frozen baseline
+# has two available explanations -- the end-to-end gradient did something, or Poc2Mol simply
+# got 4000 more steps of ordinary training and a decoder that tracked it. This is the only
+# arm that separates them. Do not drop it to free a GPU.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_d_control"
+tags: ["${task_name}", "e2e", "arm_d", "control", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: false

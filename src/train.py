@@ -130,6 +130,28 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         f"{accumulate_grad_batches} accumulation = {effective} samples/step "
         f"(target {target_samples_per_batch})"
     )
+    # `val_check_interval` counts TRAINING MICRO-BATCHES, so accumulation silently rescales
+    # it: the same 250 that means "every 250 optimiser steps" at accumulate=1 means "every
+    # 62" at accumulate=4. That in turn rescales EarlyStopping's patience, which counts
+    # validation checks. On 2026-08-12 this stopped an end-to-end arm at step 1312 with a
+    # nominal patience of 3000, and no arm would have reached its LR anneal. Nothing here
+    # is wrong per se, so this warns rather than raises -- but it should never again be
+    # discovered by reading a truncated run.
+    val_check_interval = cfg.trainer.get("val_check_interval", None)
+    if accumulate_grad_batches > 1 and isinstance(val_check_interval, int):
+        steps_between = val_check_interval / accumulate_grad_batches
+        patience = None
+        if cfg.get("callbacks") and cfg.callbacks.get("early_stopping"):
+            patience = cfg.callbacks.early_stopping.get("patience")
+        log.warning(
+            f"val_check_interval={val_check_interval} counts MICRO-BATCHES; with "
+            f"accumulate_grad_batches={accumulate_grad_batches} that is a validation every "
+            f"{steps_between:g} OPTIMISER STEPS"
+            + (f", so early-stopping patience {patience} = {patience * steps_between:g} steps"
+               if patience else "")
+            + ". Multiply by accumulate_grad_batches if you meant optimiser steps."
+        )
+
     if effective != target_samples_per_batch:
         log.warning(
             f"Effective batch {effective} != target {target_samples_per_batch}. "

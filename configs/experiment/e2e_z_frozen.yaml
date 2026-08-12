@@ -1,0 +1,28 @@
+# @package _global_
+# ARM Z -- THE BASELINE. Poc2Mol frozen. This is stage 3, reproduced inside this codebase.
+#
+# poc2mol_lr 0 means the upstream never updates (AdamW's decoupled decay is also lr-scaled,
+# so it does not creep either) and runs under .eval(), exactly as the frozen stage-3
+# pipeline did. voxel_loss_weight 0 and lm_grad_to_poc2mol false remove both gradients into
+# it. What is left is a decoder fine-tuning on a fixed upstream's density: stage 3.
+#
+# WHY THIS ARM EXISTS. The published stage-3 figure is 0.7522, but that run validated with
+# `rotate: true, translation: 6.0` -- vox2smiles_combined_v2_11ch.yaml overrides only
+# `use_cluster_member_zero` and `data_path` on its val datasets, so they inherit the
+# training augmentation. Validation was therefore STOCHASTIC, against CLAUDE.md §6, and
+# "best val AUC" from it carries the ~+0.025 maximum-selection inflation §6 describes. This
+# experiment validates deterministically, so 0.7522 is NOT a like-for-like target. This arm
+# supplies the like-for-like one.
+#
+# Compare every other arm to THIS number, not to 0.7522.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_z_frozen"
+tags: ["${task_name}", "e2e", "arm_z", "baseline", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false

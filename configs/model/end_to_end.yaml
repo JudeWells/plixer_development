@@ -1,0 +1,71 @@
+# Poc2Mol -> Vox2Smiles as a single differentiable model.
+#
+# Unlike the stage-3 configs, the Poc2Mol lives HERE rather than on the datamodule. That is
+# the whole point: run from the datamodule it sits outside the autograd graph, so no amount
+# of unfreezing gets a gradient to it. See src/models/end_to_end.py.
+defaults:
+  - /model@poc2mol_model: poc2mol_frozen
+  - _self_
+
+_target_: src.models.end_to_end.EndToEndPoc2Smiles
+
+# Initialised from the standalone 11-channel Poc2Mol (Dice 0.5027, CLAUDE.md §22b). The
+# decoder's own stage-1 weights come in via the experiment's `init_weights_from`, since the
+# two upstreams live in different files.
+poc2mol_ckpt_path: checkpoints/poc2mol_v2/poc2mol_v2_11ch_ep576.ckpt
+
+# Weight on the BCE+Dice term. 1.0 reproduces Poc2Mol's own training objective exactly, so
+# the LM loss is a pure addition to it rather than a replacement. Lower it and the density
+# is free to drift towards whatever the decoder finds convenient -- which is the thing worth
+# testing and also the thing most likely to quietly destroy the model as a density model.
+# Watch val/poc2mol/dice against the 0.5027 baseline whatever this is set to.
+voxel_loss_weight: 1.0
+
+# The upstream arrives 576 epochs deep and is about to receive a gradient of a kind it has
+# never seen. It gets the smaller learning rate; the decoder keeps its stage-3 5e-5.
+poc2mol_lr: 1e-5
+poc2mol_weight_decay: 0.05
+
+# False severs the LM gradient at the Poc2Mol boundary while leaving everything else
+# identical -- the control that separates "end-to-end helps" from "unfreezing helps".
+lm_grad_to_poc2mol: true
+
+# Optimiser steps to hold Poc2Mol still before letting it move. Implemented by zeroing the
+# term, not by detaching, so DDP still sees every parameter (see build_pixel_values).
+poc2mol_warmup_steps: 0
+
+# §14a: protein channels into the decoder made both metrics worse. Off, matching stage 3.
+inject_protein: false
+
+visualise_val: false
+n_samples_for_validity_testing: 30
+
+poc2mol_model:
+  config:
+    out_channels: 11
+
+config:
+  hidden_size: 768
+  num_hidden_layers: 8
+  num_attention_heads: 8
+  intermediate_size: 3072
+  hidden_act: "gelu"
+  hidden_dropout_prob: 0.0
+  attention_probs_dropout_prob: 0.0
+  initializer_range: 0.02
+  layer_norm_eps: 1e-12
+  image_size: [32, 32, 32]
+  patch_size: 4
+  num_channels: 11
+  qkv_bias: True
+  encoder_stride: 2
+  lr: 5e-5
+  weight_decay: 0.01
+  torch_dtype: "bfloat16"
+  scheduler:
+    type: "warmup_stable_decay"
+    num_warmup_steps: 200
+    num_stable_steps: 1800
+    num_decay_steps: 2000
+    min_lr_ratio: 0.1
+    interval: "step"

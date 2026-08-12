@@ -1,0 +1,27 @@
+# @package _global_
+# ARM C -- long leash: the LM loss leads, the voxel loss only restrains.
+#
+# Arm B with voxel_loss_weight dropped from 1.0 to 0.1. This is the arm that pushes hardest
+# on the hypothesis -- that the density which maximises reconstruction Dice is not the
+# density the decoder wants -- because it is where the LM gradient most clearly overrules
+# the reconstruction gradient. Calibration from the smoke test: at weight 1.0 the LM
+# gradient into Poc2Mol already outweighs the reconstruction one (norm 16.6 against 9.5), so
+# at 0.1 the anchor is light indeed.
+#
+# It is also the arm most likely to fail informatively. If val/poc2mol/dice collapses from
+# 0.5027 while val/likelihood_auc_znorm climbs, Poc2Mol has stopped being a density model
+# and started being a private code for the decoder: a working generator, but one that throws
+# away the interpretable middle layer and cannot be diagnosed by any existing tool. Read the
+# two curves together, and run scripts/adhoc_analysis/density_diagnostics.py on the result
+# before believing an AUC win from this arm.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_c_lm_dominant"
+tags: ["${task_name}", "e2e", "arm_c", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 0.1
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true
