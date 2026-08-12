@@ -24,9 +24,16 @@ class ComplexDataModule(LightningDataModule):
         test_dataset: Optional[Dataset] = None,
         pin_memory: bool = True,
         prefetch_factor: Optional[int] = 4,
+        val_batch_size: Optional[int] = None,
     ):
         super().__init__()
         self.config = config
+        # Validation batch size was hardcoded to min(4, batch_size). That is fine for a
+        # metric that is a plain average over the whole split, but it starves any metric
+        # evaluated on a fixed budget of BATCHES rather than samples -- 4 pockets per batch
+        # means a 2-batch budget scores 8 pockets, which is noise. None reproduces the old
+        # behaviour exactly.
+        self.val_batch_size = val_batch_size
         self.pdb_dir = pdb_dir
         self.val_pdb_dir = val_pdb_dir
         self.test_pdb_dir = test_pdb_dir or val_pdb_dir  # Use val_pdb_dir as default for test
@@ -94,14 +101,13 @@ class ComplexDataModule(LightningDataModule):
         """Get the training data loader."""
         return self._loader(self.train_dataset, self.config.batch_size, shuffle=True)
 
+    def _eval_batch_size(self):
+        return self.val_batch_size or min(4, self.config.batch_size)
+
     def val_dataloader(self):
         """Get the validation data loader."""
-        return self._loader(
-            self.val_dataset, min(4, self.config.batch_size), shuffle=False
-        )
+        return self._loader(self.val_dataset, self._eval_batch_size(), shuffle=False)
 
     def test_dataloader(self):
         """Get the test data loader."""
-        return self._loader(
-            self.test_dataset, min(4, self.config.batch_size), shuffle=False
-        )
+        return self._loader(self.test_dataset, self._eval_batch_size(), shuffle=False)
