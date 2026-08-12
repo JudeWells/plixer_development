@@ -224,12 +224,22 @@ def main():
     sigmas = [b["sigma"] for b in best.values() if b.get("sigma")]
     if sigmas:
         pooled = float(np.mean(sigmas))
-        # Two arms' smoothed peaks differ meaningfully only if the gap clears the noise on
-        # the difference. Smoothing over 3 checks divides the variance by ~3, and comparing
-        # two arms doubles it again.
-        threshold = 1.96 * pooled * np.sqrt(2.0 / 3.0)
-        print(f"  Per-check sigma across arms = {pooled:.4f}. A contrast between SMOOTHED peaks")
-        print(f"  needs to clear ~{threshold:.4f} to be worth anything at one seed.")
+        print(f"  Per-check sigma across arms = {pooled:.4f} (WITHIN a run, between validations).")
+    # ⚠️ Do NOT turn the per-check sigma into a significance threshold. That is what this
+    # script used to do, propagating it as 1.96*sigma*sqrt(2/3) to get floors of 0.020-0.024,
+    # and it was far too conservative -- it labelled every real effect "noise" for most of a
+    # day. The smoothed PEAK is a much more stable statistic than the per-check scatter
+    # implies, because smoothing plus taking a maximum over 16 checks averages most of that
+    # scatter away.
+    #
+    # Measured directly on seed replicates (2026-08-12, 4000 steps each):
+    #     Z frozen    seed 42  0.7601   seed 43  0.7618   spread 0.0017
+    #     B balanced  seed 42  0.7531   seed 43  0.7515   spread 0.0016
+    # so the between-seed spread of the smoothed peak is ~0.002, an order of magnitude below
+    # the per-check sigma. THAT is the yardstick for comparing arms.
+    print("  Between-seed spread of the SMOOTHED PEAK is ~0.002 (measured, Z and B, 2 seeds).")
+    print("  Judge contrasts against ~0.002-0.005, NOT against the per-check sigma above.")
+    print("  Caveat: 2 seeds is a crude spread estimate, and only Z/B have replicates.")
     print("  Parameter-free composition readout = 0.7615 (§14d).")
 
     print()
