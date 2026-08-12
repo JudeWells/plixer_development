@@ -53,9 +53,44 @@ severed it is **exactly 0.0**. Analysis: `scripts/adhoc_analysis/e2e_sweep_repor
 4. ⚠️ **Freeze by zeroing the LOSS TERM, never by detaching** — a detached upstream leaves
    parameters out of the backward pass and plain DDP rejects it outright.
 
-Result so far: round 1 (truncated) had **nothing beating the frozen baseline**, every
-contrast inside the ±0.02 noise band, and Dice falling in every arm whose upstream moved.
-Round 2 therefore tightens the anchor (`voxel_loss_weight: 3.0`) rather than loosening it.
+### RESULT: end-to-end does NOT beat the frozen baseline. Nine arms, 2026-08-12.
+
+Smoothed peaks on `val/likelihood_auc_znorm`, deterministic validation, 4000 steps
+(2-seed means where available). **Read smoothed peaks, never raw bests** — the two rank the
+arms differently and raw is inflated ~0.015–0.03 by max-selection over 16 checks.
+
+| arm | what | AUC | Dice |
+|---|---|---|---|
+| **Z frozen** | the baseline (= stage 3) | **0.7610** | 0.5028 |
+| B balanced | LM gradient + voxel loss, w=1 | 0.7523 | 0.5122 |
+| F | Z but on B's *final* density, frozen | 0.7504 | 0.5122 |
+| G | Z but on D's *final* density, frozen | 0.7463 | 0.5068 |
+| E slow upstream | poc2mol_lr 1e-5 | 0.7465 | 0.5031 |
+| D control | upstream trains on voxel loss only | 0.7450 | 0.5068 |
+
+Also measured: A (`voxel_loss_weight: 3.0`) and C (0.1) — anchor strength does nothing,
+A − B = −0.004. Drift curve on B's density frozen at step 500 / 1000 / 4000: 0.7630 /
+0.7611 / 0.7549, a span of 0.008 that does **not** clear the threshold.
+
+**What is established** (2-seed contrasts, threshold ~0.009):
+- `G − Z = −0.015` — training Poc2Mol further hurts downstream, *whatever* the objective.
+- `F − Z = −0.011` — and the end-to-end density is no exception.
+- **Dice and downstream usability move in OPPOSITE directions.** F and G both reconstruct
+  better than Z (0.5122, 0.5068 vs 0.5028) and both score worse. A sharp restatement of §8.
+
+**What is NOT established:** `F − G = +0.004`, the LM gradient's isolated contribution. It
+may be positive; one seed pair cannot tell. And there is no win at low drift.
+
+🚨 **Seed variance is the binding constraint, and it is not uniform.** Pooled per-run
+σ = **0.0045** over four replicate pairs → a contrast needs **0.0127** at one seed per arm,
+**0.009** at two. Do not estimate it from a single pair: Z and B gave spreads of 0.0017 and
+0.0016 while F and G gave 0.0091 and 0.0084 *on the same protocol*. Reading contrasts
+against the tight pairs briefly made several null results look real.
+
+⏱️ **Every run here wasted 3250 of its 4000 steps.** Arm Z peaks at step ~750 in both seeds
+and declines thereafter; a 1500-step schedule scores the same (0.7628 vs 0.7610) for 2.7× less
+compute. The peak position is intrinsic, not a mis-sized anneal — compressing the schedule
+moved neither its height nor its location. Budget replicates, not steps.
 
 ### The original obstacle (now solved — kept for the reasoning): severed three times
 
