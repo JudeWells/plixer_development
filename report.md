@@ -2570,3 +2570,58 @@ it is negative), LM gradient = +0.0098, anchor 1.0→3.0 = −0.0043.
 per-check sigma of the frozen ones. A non-stationary decoder input shows up as validation
 noise, which both makes these arms harder to measure and is a cost of end-to-end training in
 its own right.
+
+### 23h. FINAL RESULT — end-to-end does not beat the frozen baseline
+
+Thirteen runs over nine configurations, all at 4000 steps with deterministic validation, all
+read as the peak of a 3-check rolling mean. Two seeds where shown as a mean.
+
+| arm | what changed from the baseline | AUC | Dice | seeds |
+|---|---|---|---|---|
+| **I** | B's density at step 500, frozen | **0.7638** | 0.4967 | 2 |
+| **Z** | *the baseline* — frozen upstream, = stage 3 | **0.7610** | 0.5028 | 2 |
+| H | B's density at step 1000, frozen | 0.7599 | 0.5006 | 2 |
+| B | LM gradient + voxel loss, weight 1.0 | 0.7523 | 0.5122 | 2 |
+| F | B's density at step 4000, frozen | 0.7504 | 0.5122 | 2 |
+| C | anchor loosened to 0.1 | 0.7483 | 0.4908 | 1 |
+| E | upstream lr 1e-5 | 0.7465 | 0.5031 | 1 |
+| G | D's density at step 4000, frozen | 0.7463 | 0.5068 | 1 |
+| D | upstream trains on voxel loss only | 0.7450 | 0.5068 | 1 |
+| A | anchor tightened to 3.0 | 0.7431 | 0.4938 | 1 |
+
+Pooled per-run seed sigma over six replicate pairs = **0.0038**, so a contrast needs ~0.0075
+at two seeds per arm and ~0.0107 at one.
+
+**The only contrast that clears it is `F − Z = −0.0106`**: a density given 4000 steps of
+end-to-end training reconstructs BEST of anything tested (Dice 0.5122 vs the baseline's
+0.5028) and decodes WORST (0.7504 vs 0.7610). Both upstreams frozen and stationary when
+measured, same decoder init, so this is a clean statement about the density itself. It is
+§8/§14d made concrete: **reconstruction quality and decoder-usable signal are different
+axes, and past some point they are actively opposed.**
+
+Everything else is under threshold, including the two results this branch was built to find:
+
+* `B − Z = −0.0087` — end-to-end training is *not* better than leaving Poc2Mol frozen, and
+  the direction is negative in every single arm that trained the upstream.
+* `F − G = +0.0041` — the LM gradient's isolated contribution to density quality, measured
+  with the moving-target confound removed from both sides. Positive, plausibly real, not
+  established. This is the number a future attempt should power properly.
+
+**What was eliminated along the way**, each by its own arm rather than by argument: density
+collapse into a private code (Dice *rises*, it does not collapse); too weak an anchor
+(A − B = −0.0043); too strong an anchor (C − B = +0.0052 at one seed, also null); and the
+upstream moving too fast (E − B = −0.0058). The moving-target explanation survived all of
+those and is supported by the noise: every arm whose upstream moved carries ~2x the
+per-check validation sigma of a frozen one. But removing the moving target entirely, which
+is what F/G/H/I do, still does not produce a win.
+
+**The one loose end.** Arm I — 500 steps of end-to-end, then freeze and retrain the decoder
+— is the only configuration anywhere above the baseline, at +0.0028. That is 0.37x the
+threshold, so it is not a result. It is worth one more seed rather than a shrug: both its
+pairs are tight (0.0016, 0.0017 spread, against 0.009 for F and G), and at that sigma three
+to four seeds would settle it either way.
+
+**Do not read the drift curve as monotonic.** At one seed it looked like a clean inversion
+(AUC falling as Dice rose across four points); at two seeds H drops below Z despite lower
+Dice, and the ordering breaks. The honest version is the two-point one: heavy drift is worse,
+low drift is indistinguishable from no drift.
