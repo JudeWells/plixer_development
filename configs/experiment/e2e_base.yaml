@@ -59,23 +59,36 @@ model:
 
 callbacks:
   early_stopping:
-    # The RANKING metric, never val/loss -- §18h measured them anti-correlated. Noisy at
-    # +-0.02 between adjacent checks, hence the generous patience.
+    # ROUND 3: effectively DISABLED (patience 1000 > the 16 checks a full run performs).
     #
-    # patience counts VALIDATION CHECKS, so its meaning in steps depends on
-    # val_check_interval AND accumulate_grad_batches -- see the trainer block below.
-    # At 250 optimiser steps per check, 8 = 2000 steps without a new best.
+    # EarlyStopping monitors the RAW metric, and the raw metric's per-check sigma is 0.012
+    # pooled -- 0.016 on the arms whose upstream moves. So a lucky early draw becomes a bar
+    # the arm can never beat, and it dies. That is not hypothetical: in round 2 arm B spiked
+    # to 0.7619 at step 499 (its smoothed level was ~0.747), and patience 8 then killed it at
+    # step 2499 of 4000, before the LR anneal running 2000->4000 had finished. Z, D and A were
+    # on track to die at 2999, 2749 and 3499 -- every arm stopping at a different step, chosen
+    # by where its noise spike happened to land. That is not a comparison.
+    #
+    # Runs are only ~2 h on 2 GPUs and the anneal is where §19d found +15% Tanimoto, so
+    # letting every arm run the full 4000 steps costs little and buys a matched comparison.
+    # Selection happens offline on the SMOOTHED trajectory
+    # (scripts/adhoc_analysis/e2e_sweep_report.py), which is the right way to read a metric
+    # this noisy anyway.
     _target_: lightning.pytorch.callbacks.EarlyStopping
     monitor: "val/likelihood_auc_znorm"
     mode: "max"
-    patience: 8
+    patience: 1000
     min_delta: 0.0
     check_on_train_epoch_end: False
     verbose: True
   model_checkpoint:
     monitor: "val/likelihood_auc_znorm"
     mode: "max"
-    save_top_k: 2
+    # 5, not 2: top_k ranks on the RAW metric, so the two best raw checkpoints are likely to
+    # be noise spikes rather than the genuinely best model. Keeping five makes it much more
+    # likely that the smoothed-peak region is actually on disk when it comes to picking a
+    # checkpoint. §21 records a best-ever checkpoint that top_k rotation nearly deleted.
+    save_top_k: 5
     save_last: True
     # Keep the optimiser state: a weights-only checkpoint makes any resume lossy, and this
     # checkpoint now carries BOTH models, so it is the only complete record of the run.

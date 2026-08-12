@@ -2523,3 +2523,50 @@ loosest-anchor arm was the clearest loser. Nothing beat the frozen baseline.
 **Round 2** (running, W&B `uxufh43w` / `1e3ptob7` / `0d5u8ufc` / `1l41jx1d`) fixes the
 cadence and replaces C with `voxel_loss_weight 3.0`. Analysis:
 `scripts/adhoc_analysis/e2e_sweep_report.py`.
+
+### 23f. 🚨 EarlyStopping on a noisy metric kills arms at the wrong step
+
+Round 2 fixed the cadence (§23d) and set `patience: 8` = 2000 optimiser steps, which sounds
+generous. It is not, because **EarlyStopping monitors the RAW metric**, and the raw metric's
+per-check sigma is 0.012 pooled — 0.016 on the arms whose upstream moves.
+
+Arm B spiked to 0.7619 at step **499** while its smoothed level was ~0.747, i.e. roughly a
++2σ draw in its second validation. That spike became the bar, nothing beat it, and the arm
+was stopped at step 2499 of 4000 — **before the LR anneal running 2000→4000 had finished**,
+the phase §19d found worth +15% Tanimoto. The other three were on track to stop at 2999,
+2749 and 3499. Every arm stopping at a different step, chosen by where its noise spike landed,
+is not a comparison.
+
+**Round 3 disables early stopping** (`patience: 1000` against 16 checks) so every arm runs
+the full 4000 steps, and raises `save_top_k` to 5 because top-k also ranks on the raw metric
+— its top 2 are likely to be spikes rather than the genuinely best model.
+
+### 23g. Read SMOOTHED peaks, never raw maxima
+
+Adjacent-check swings inside a single arm reach 0.045 (arm A went 0.7541 → 0.7094 in one
+check). With sigma ≈ 0.012 and ~16 draws, the expected maximum sits about
+`sigma*sqrt(2*ln(16))` ≈ **0.029** above the true level — larger than any contrast in this
+experiment. Ranking arms by "best AUC" therefore ranks luck.
+
+It changes conclusions, not just decimals. Mid-round-2, on raw bests, arm A led and the
+frozen baseline was third; on smoothed peaks the frozen baseline led and every arm with a
+moving upstream sat below it. `e2e_sweep_report.py` now reports the peak of a centred
+3-check rolling mean as the headline, estimates per-check sigma from successive differences,
+and prints the implied selection inflation next to the raw best.
+
+Mid-round-2 smoothed standings (step ~1750/4000, so NOT final):
+
+| arm | smoothed peak | raw best | sigma/check |
+|---|---|---|---|
+| Z frozen | **0.7595** | 0.7609 | 0.0096 |
+| B balanced | 0.7475 | 0.7619 | 0.0162 |
+| A anchored 3.0 | 0.7431 | 0.7541 | 0.0153 |
+| D control | 0.7377 | 0.7430 | 0.0080 |
+
+Contrasts against a ~0.020 floor: unfreezing = **−0.0218** (the only one that clears it, and
+it is negative), LM gradient = +0.0098, anchor 1.0→3.0 = −0.0043.
+
+**Also note the noise itself is a result:** arms whose upstream moves carry roughly twice the
+per-check sigma of the frozen ones. A non-stationary decoder input shows up as validation
+noise, which both makes these arms harder to measure and is a cost of end-to-end training in
+its own right.
