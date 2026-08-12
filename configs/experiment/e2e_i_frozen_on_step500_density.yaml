@@ -1,0 +1,36 @@
+# @package _global_
+# ARM I -- the third point on the drift curve: B's density at step 500.
+#
+# Same construction as F, G and H: freeze a density that arm B produced, train a fresh
+# stage-1 decoder on it, change nothing else. The four arms together map what happens to a
+# density's DOWNSTREAM usability as end-to-end training drifts it away from the checkpoint it
+# started at:
+#
+#     arm   B-step   Dice     what it is
+#     Z          0   0.5028   the original poc2mol_v2_11ch_ep576, untouched
+#     I        500   ?        HERE -- the least drift available
+#     H       1000   0.5006   drift has made reconstruction WORSE at this point
+#     F       4000   0.5122   drift has made reconstruction BETTER than the original
+#
+# Note Dice is NOT monotonic in drift: it dips below the starting checkpoint by step 1000 and
+# only overtakes it later. So "how far has the density drifted" and "how well does it
+# reconstruct" are different axes too, and a two-point curve could not have shown that --
+# which is the reason to spend a run on a third point rather than a replicate.
+#
+# What this arm decides. F - Z = -0.0052 says the fully-drifted density is worse downstream.
+# If the damage accumulates with drift, I should sit closest to Z of all of them, and the
+# curve Z -> I -> H -> F tells us whether there is ANY amount of end-to-end training that
+# pays. If even 500 steps of drift costs downstream AUC, the answer for this pipeline is a
+# clean no, and that is worth stating as a result rather than leaving as an untested corner.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_i_frozen_on_step500_density"
+tags: ["${task_name}", "e2e", "arm_i", "drift", "v2", "11ch", "seed${seed}"]
+
+model:
+  poc2mol_ckpt_path: checkpoints/e2e_b_r3_poc2mol_step500.ckpt
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false
