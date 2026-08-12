@@ -232,14 +232,23 @@ def main():
     # implies, because smoothing plus taking a maximum over 16 checks averages most of that
     # scatter away.
     #
-    # Measured directly on seed replicates (2026-08-12, 4000 steps each):
-    #     Z frozen    seed 42  0.7601   seed 43  0.7618   spread 0.0017
-    #     B balanced  seed 42  0.7531   seed 43  0.7515   spread 0.0016
-    # so the between-seed spread of the smoothed peak is ~0.002, an order of magnitude below
-    # the per-check sigma. THAT is the yardstick for comparing arms.
-    print("  Between-seed spread of the SMOOTHED PEAK is ~0.002 (measured, Z and B, 2 seeds).")
-    print("  Judge contrasts against ~0.002-0.005, NOT against the per-check sigma above.")
-    print("  Caveat: 2 seeds is a crude spread estimate, and only Z/B have replicates.")
+    # Measured on seed replicates (2026-08-12, 4000 steps each):
+    #     Z frozen    0.7601 / 0.7618   spread 0.0017
+    #     B balanced  0.7531 / 0.7515   spread 0.0016
+    #     F B-density 0.7549 / 0.7458   spread 0.0091   <-- 5x the first two
+    #     G D-density 0.7505 / 0.7421   spread 0.0084
+    #
+    # ⚠️ The first two pairs alone gave "spread ~0.002", and reading contrasts against that
+    # briefly made several null results look real. With n=2 the spread estimate has enormous
+    # variance -- Z and B simply drew tight pairs. Pooling all four (sigma^2 = mean(diff^2)/2)
+    # gives a per-run seed sigma of ~0.0045, so:
+    #     one seed per arm   -> a contrast needs ~0.012 (2 sigma * sqrt(2))
+    #     two seeds per arm  -> ~0.009
+    # Use those. And note four pairs is still a thin basis for a variance estimate.
+    print("  Per-run BETWEEN-SEED sigma ~0.0045 (pooled over 4 replicate pairs).")
+    print("  A contrast needs ~0.012 at one seed per arm, ~0.009 at two seeds per arm.")
+    print("  ⚠️ Do not trust a spread estimated from a single pair: Z/B gave 0.0017 and")
+    print("     0.0016 while F/G gave 0.0091 and 0.0084 on the same protocol.")
     print("  Parameter-free composition readout = 0.7615 (§14d).")
 
     print()
