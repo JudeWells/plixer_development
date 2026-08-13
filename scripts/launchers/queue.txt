@@ -1,0 +1,41 @@
+# Arms to launch as GPUs free, in order. One experiment name per line.
+# Launched lines are rewritten in place with a '# launched HH:MM:SS' prefix.
+# Append more names at any time; autofill_gpus.sh re-reads this file every cycle.
+#
+# LR sweep first -- it is the more informative axis. All constant-LR, 3000 steps, no decay,
+# early stopping unreachable, so the curves show where DPO actually turns over. The reference
+# arm (5e-6, seeds 42/43) is already running.
+# launched 23:05:36 rl_dpo_const_lr1e5
+# launched 23:29:39 rl_dpo_const_lr2e6
+# launched 01:30:54 rl_dpo_const_lr2e5
+# Then seed replication at the reference LR, so the sweep can be read against seed spread
+# rather than against single draws -- the error that produced three wrong answers today.
+# 5e-6 seed replicates DROPPED: the sweep shows 5e-6 is not the optimum, so replicating it
+# is no longer the best use of a slot. Replaced with replication AT the winning LR and one
+# interpolation point between 1e-5 and 2e-5.
+# launched 01:35:21 rl_dpo_const_lr1e5_s43
+# launched 01:43:56 rl_dpo_const_lr15e6
+# launched 02:12:09 rl_dpo_const_lr1e5_s44
+# Sweep has not turned over: 2e-5 beats 1e-5 by step 699. Open the bracket upward FIRST --
+# locating the optimum is worth more than replicating a setting we already know is not it.
+# launched 03:53:44 rl_dpo_const_lr4e5
+# launched 04:04:05 rl_dpo_const_lr8e5
+# KL controls: does the high-LR tanimoto gain survive a tighter leash, or was it drift?
+# launched 04:09:26 rl_dpo_lr2e5_kb005
+# launched 04:39:51 rl_dpo_lr2e5_kb01
+# launched 05:49:20 rl_dpo_const_lr2e5_s43
+# Diversity/reward frontier. The 2e-5 policy bought +0.043 tanimoto with -25% scaffolds; kl_beta
+# is the knob that trades them. These log the new diversity metrics natively.
+# --- PRIORITY: AUC ensemble members (answers "can a DPO ensemble beat 0.7883?") ---
+# Checkpointed on val/likelihood_auc_znorm, not tanimoto. Diversified by LR *and* seed,
+# because seed-only members correlated at 0.948 in the earlier failed ensemble.
+# launched 06:32:21 rl_dpo_auc_5e6_s42
+# launched 06:32:41 rl_dpo_auc_1e5_s42
+rl_dpo_auc_2e5_s42
+rl_dpo_auc_5e6_s43
+rl_dpo_auc_1e5_s43
+rl_dpo_auc_2e5_s43
+# --- then the diversity/KL frontier ---
+rl_dpo_lr2e5_div
+rl_dpo_lr2e5_kb02
+rl_dpo_lr2e5_kb04

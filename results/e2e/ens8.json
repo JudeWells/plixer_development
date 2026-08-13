@@ -1,0 +1,34 @@
+{
+  "checkpoints": [
+    "logs/e2e_w12_frozen_anneal/runs/2026-08-12_17-50-37/checkpoints/step_0000062_auc_0.7616.ckpt",
+    "logs/e2e_w13_frozen_anneal_s43/runs/2026-08-12_17-50-37/checkpoints/step_0000062_auc_0.7507.ckpt",
+    "logs/e2e_w14_frozen_anneal_s44/runs/2026-08-12_17-50-37/checkpoints/step_0000062_auc_0.7594.ckpt",
+    "logs/e2e_w15_frozen_anneal_s45/runs/2026-08-12_18-00-27/checkpoints/step_0000312_auc_0.7575.ckpt",
+    "logs/e2e_w16_frozen_s46/runs/2026-08-12_18-43-01/checkpoints/step_0000312_auc_0.7625.ckpt",
+    "logs/e2e_w17_frozen_s47/runs/2026-08-12_18-43-01/checkpoints/step_0000375_auc_0.7641.ckpt",
+    "logs/e2e_w18_frozen_s48/runs/2026-08-12_18-43-01/checkpoints/step_0000375_auc_0.7499.ckpt",
+    "logs/e2e_w19_frozen_s49/runs/2026-08-12_18-43-01/checkpoints/step_0000062_auc_0.7657.ckpt"
+  ],
+  "solo_znorm_auc": [
+    0.7605470866464584,
+    0.749708042290852,
+    0.7593188507665949,
+    0.7576458141135469,
+    0.762775666652023,
+    0.7654829108641216,
+    0.7504576139641816,
+    0.7652989500505206
+  ],
+  "solo_znorm_auc_unnormalised_path": [
+    0.7605470866464584,
+    0.749708042290852,
+    0.7593188507665949,
+    0.7576458141135469,
+    0.762775666652023,
+    0.7654829108641216,
+    0.7504576139641816,
+    0.7652989500505206
+  ],
+  "ensemble_znorm_auc": 0.7640881035012959,
+  "n_pockets": 104
+}

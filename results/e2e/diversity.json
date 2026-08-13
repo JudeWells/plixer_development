@@ -1,0 +1,35 @@
+{
+  "pre_rl": {
+    "n_pockets": 100,
+    "validity": 0.97,
+    "uniqueness": 0.8041237113402062,
+    "scaffold_fraction": 0.5360824742268041,
+    "tanimoto_own": 0.1470774434494112,
+    "tanimoto_other": 0.09596623981209353,
+    "specificity": 0.05111120363731768,
+    "across_pocket_selfsim": 0.11792999287823362,
+    "within_pocket_selfsim": 0.132751321823293
+  },
+  "sft": {
+    "n_pockets": 100,
+    "validity": 0.96,
+    "uniqueness": 0.875,
+    "scaffold_fraction": 0.5208333333333334,
+    "tanimoto_own": 0.14098841368563655,
+    "tanimoto_other": 0.09187772722703262,
+    "specificity": 0.04911068645860393,
+    "across_pocket_selfsim": 0.11591226816156074,
+    "within_pocket_selfsim": 0.127088387872625
+  },
+  "dpo_lr2e5": {
+    "n_pockets": 100,
+    "validity": 1.0,
+    "uniqueness": 0.7,
+    "scaffold_fraction": 0.4,
+    "tanimoto_own": 0.1896132947666259,
+    "tanimoto_other": 0.12208355360081954,
+    "specificity": 0.06752974116580635,
+    "across_pocket_selfsim": 0.2277726742606752,
+    "within_pocket_selfsim": 0.4463896169595014
+  }
+}
