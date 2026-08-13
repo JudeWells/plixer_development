@@ -10,6 +10,7 @@ from src.data.common.tokenizers.smiles_tokenizer import build_smiles_tokenizer
 from src.data.common.voxelization.batched import BatchedVoxelizer
 from src.data.vox2smiles.datasets import Vox2SmilesDataset, get_collate_function
 from src.data.vox2smiles.poc2mol_inference import Poc2MolInferenceBuilder
+from src.data.vox2smiles.end_to_end import EndToEndVoxelBuilder
 from src.data.common.protein_channels import assemble_decoder_input
 
 
@@ -100,6 +101,7 @@ class Vox2SmilesDataModule(LightningDataModule):
         predicted_ligand_probability: float = 1.0,
         predicted_ramp_start_step: int = 0,
         predicted_ramp_end_step: int = 0,
+        end_to_end: bool = False,
     ):
         super().__init__()
         self.config = config
@@ -117,9 +119,23 @@ class Vox2SmilesDataModule(LightningDataModule):
         self.tokenizer = build_smiles_tokenizer()
         self.collate_fn = get_collate_function(self.tokenizer)
         self.num_workers = num_workers
+        # End-to-end training runs Poc2Mol inside the LightningModule so the LM loss can
+        # reach it, so the datamodule must NOT run it here -- this hook is outside the
+        # autograd graph. It only voxelises and hands the two grids over separately.
+        if end_to_end:
+            if poc2mol_model is not None:
+                raise ValueError(
+                    "end_to_end=True runs Poc2Mol inside the model, not the datamodule. "
+                    "Leave data.poc2mol_model unset and configure the upstream on the "
+                    "model instead (model.poc2mol_model / model.poc2mol_ckpt_path)."
+                )
+            self.voxel_builder = EndToEndVoxelBuilder(
+                config,
+                n_protein_channels=n_protein_channels if config.has_protein else 0,
+            )
         # The frozen Poc2Mol used to live inside Poc2MolOutputDataset, pinned to cuda:0.
         # It now runs here, batched, on whichever device the batch landed on.
-        if poc2mol_model is not None:
+        elif poc2mol_model is not None:
             self.voxel_builder = Poc2MolInferenceBuilder(
                 config,
                 poc2mol_model=poc2mol_model,

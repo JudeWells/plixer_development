@@ -33,7 +33,17 @@ class VoxToSmilesModel(LightningModule):
     VAL_SPLITS = ("zinc", "poc2mol", "combined")
     # loss/accuracy are teacher-forced; validity/exact_match/tanimoto come from free-running
     # generation and are the ones that actually reflect deployed behaviour.
-    VAL_METRICS = ("loss", "accuracy", "validity", "exact_match", "tanimoto")
+    # `uniqueness`, `self_sim` and `specificity` exist because a mean similarity to the true
+    # ligand is gameable by narrowing the output distribution, and nothing here would have
+    # noticed. Measured on the DPO lr 2e-5 policy against its pre-RL start: tanimoto rose
+    # 0.147 -> 0.190 while within-pocket self-similarity rose 0.133 -> 0.446 and distinct
+    # Murcko scaffolds fell 0.536 -> 0.400. The reward went up partly by generating a narrower
+    # set of molecules. `specificity` is the control that says whether the model is still
+    # conditioning on the pocket at all (it was: 0.051 -> 0.068), and it is the one to read
+    # first -- a tanimoto gain with flat specificity is reward hacking, not learning.
+    # `calculate_uniqueness` was imported by this module and never called before today.
+    VAL_METRICS = ("loss", "accuracy", "validity", "exact_match", "tanimoto",
+                   "uniqueness", "self_sim", "specificity")
 
     def __init__(
         self,
@@ -315,6 +325,30 @@ class VoxToSmilesModel(LightningModule):
                 self._update_val("tanimoto", split,
                                  calculate_paired_similarity(generated_smiles, reference_smiles),
                                  weight=m)
+                # ---- diversity and pocket-specificity, from the SAME generations ----
+                # Free: no extra decoding, just three more comparisons over molecules already
+                # sampled. Without them a policy can raise `tanimoto` by narrowing its output
+                # distribution and every logged number improves.
+                self._update_val("uniqueness", split,
+                                 calculate_uniqueness(generated_smiles), weight=m)
+                # Mean pairwise similarity BETWEEN pockets' generations. Rises towards 1.0 as
+                # the model converges on one molecule regardless of pocket.
+                self._update_val("self_sim", split,
+                                 calculate_paired_similarity(
+                                     generated_smiles, generated_smiles[1:] + generated_smiles[:1]
+                                 ), weight=m)
+                # Specificity: same generations scored against a ROTATED assignment of true
+                # ligands, so each is compared with some other pocket's answer. `tanimoto`
+                # minus this is the part of the similarity that is actually about the pocket;
+                # if it goes to zero the model has stopped conditioning and is emitting a
+                # generically ligand-like molecule. Rotation rather than a random shuffle keeps
+                # it deterministic, which matters because validation is otherwise exactly
+                # reproducible (see CLAUDE.md §0 on the lr=0 control's sd of 0.0000).
+                self._update_val("specificity", split,
+                                 calculate_paired_similarity(generated_smiles, reference_smiles)
+                                 - calculate_paired_similarity(
+                                     generated_smiles, reference_smiles[1:] + reference_smiles[:1]
+                                 ), weight=m)
 
         if batch_idx < 3 and self.visualise_val:
             try:

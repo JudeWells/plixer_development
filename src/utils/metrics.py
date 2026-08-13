@@ -209,23 +209,42 @@ def calculate_paired_similarity(generated_smiles, reference_smiles):
     Fingerprints are Morgan radius 2, 2048 bits -- the same as the published evaluation, so
     numbers stay comparable with the paper's similarity-enrichment figures.
     """
+    similarities = paired_similarities(generated_smiles, reference_smiles)
+    if not similarities:
+        return float("nan")
+    return sum(similarities) / len(similarities)
+
+
+def paired_similarities(generated_smiles, reference_smiles):
+    """Per-pair Morgan-Tanimoto, as a plain list. The values `calculate_paired_similarity`
+    averages.
+
+    Exists because RL needs the similarity of EACH sample as a reward signal, not the batch
+    mean. Factored out rather than reimplemented so the reward optimised by
+    `src/models/rl_vox2smiles.py` is definitionally the same quantity as the
+    `val/*/tanimoto` metric it is judged on -- including the convention that an unparseable
+    generation scores 0.0 rather than being dropped, which is what stops a policy from
+    farming reward by emitting garbage on the hard pockets.
+    """
     n = min(len(generated_smiles), len(reference_smiles))
     if n == 0:
-        return float("nan")
+        return []
 
+    scores = []
     with _blocked_rdkit_logs():
-        total = 0.0
         for gen, ref in zip(generated_smiles[:n], reference_smiles[:n]):
             if not gen or not ref:
+                scores.append(0.0)
                 continue
             gen_mol = Chem.MolFromSmiles(gen)
             ref_mol = Chem.MolFromSmiles(ref)
             if gen_mol is None or ref_mol is None:
-                continue  # counts as 0.0
+                scores.append(0.0)
+                continue
             gen_fp = AllChem.GetMorganFingerprintAsBitVect(gen_mol, 2, nBits=2048)
             ref_fp = AllChem.GetMorganFingerprintAsBitVect(ref_mol, 2, nBits=2048)
-            total += DataStructs.TanimotoSimilarity(gen_fp, ref_fp)
-    return total / n
+            scores.append(float(DataStructs.TanimotoSimilarity(gen_fp, ref_fp)))
+    return scores
 
 
 def calculate_average_similarity(generated_smiles, reference_smiles):
