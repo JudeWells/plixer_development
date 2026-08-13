@@ -91,10 +91,11 @@ w = 0.2**, so the gain is not the blend weight moving to suit our readouts. Pair
 pockets (400 resamples): **+0.0199 vs the bundle, 95% CI [+0.0068, +0.0333], excludes zero**.
 
 **The gain is member quality, not member count.** A alone (4 checkpoints) scores 0.8057; adding
-the bundle's six gives +0.0022 with a CI spanning zero. And all-16 (0.8050) is *worse* than
-bundle+A — B's AUC-weak members dilute. A's edge is a stronger composition readout (0.7582 vs
-0.7408) that is markedly less correlated with the decoder (0.399 vs 0.547), which is what lets
-fusion contribute +0.032 instead of +0.0065. Two of A's four members carry end-to-end-drifted
+the bundle's six gives +0.0022, and adding D as well only reaches 0.8090 (+0.0032 over A), both
+with CIs spanning zero. Pooling the *tanimoto*-selected B set instead makes things **worse**
+(bundle+A+B = 0.8050 against bundle+A = 0.8080) — AUC-weak members dilute rather than diversify.
+A's edge is a stronger composition readout (0.7582 vs 0.7408) that is markedly less correlated
+with the decoder (0.399 vs 0.547), which is what lets fusion contribute +0.032 instead of +0.0065. Two of A's four members carry end-to-end-drifted
 Poc2Mol upstreams, which is the density-diversity axis the bundle's §5 identified.
 
 **A DPO-only ensemble beats the reference at matched member count: 0.7984 vs 0.7883 (6 vs 6),**
