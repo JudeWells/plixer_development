@@ -80,10 +80,11 @@ verified identical across all three matrix sets before combining.
 | set | ckpts | decoder | composition | fused | @w | corr(dec,comp) |
 |---|---|---|---|---|---|---|
 | bundle (e2e/frozen) | 6 | 0.7818 | 0.7408 | 0.7883 | 0.2 | 0.547 |
+| **D — DPO, AUC-selected** | 6 | 0.7651 | 0.7445 | **0.7984** | 0.5 | 0.431 |
 | **A — AUC-selected** | 4 | 0.7733 | **0.7582** | **0.8057** | 0.5 | **0.399** |
 | B — DPO, tanimoto-selected | 6 | 0.7541 | 0.7445 | 0.7871 | 0.5 | 0.469 |
 | **bundle + A** | 10 | 0.7978 | 0.7476 | **0.8080** | 0.3 | |
-| all three | 16 | 0.7898 | 0.7475 | 0.8050 | 0.3 | |
+| **bundle + A + D** | 16 | 0.7930 | 0.7475 | **0.8090** | 0.3 | |
 
 **bundle+A wins at EVERY weight 0.1–0.6, including 0.8076 at the bundle's own pre-committed
 w = 0.2**, so the gain is not the blend weight moving to suit our readouts. Paired bootstrap over
@@ -95,6 +96,20 @@ bundle+A — B's AUC-weak members dilute. A's edge is a stronger composition rea
 0.7408) that is markedly less correlated with the decoder (0.399 vs 0.547), which is what lets
 fusion contribute +0.032 instead of +0.0065. Two of A's four members carry end-to-end-drifted
 Poc2Mol upstreams, which is the density-diversity axis the bundle's §5 identified.
+
+**A DPO-only ensemble beats the reference at matched member count: 0.7984 vs 0.7883 (6 vs 6),**
+and its members are individually stronger (mean AUC 0.7653 against the bundle's 0.7367) while also
+far ahead on tanimoto — DPO is better on both axes at the MODEL level. ⚠️ But the win is
+weight-dependent: at the bundle's pre-committed w = 0.2 the DPO ensemble is *behind* (0.7832 vs
+0.7883), because its more orthogonal readouts want w ≈ 0.5. A (mixed density) wins at every weight;
+D does not.
+
+🔑 **DPO is capped on the composition axis by construction.** RL freezes Poc2Mol, so all six DPO
+members share one density and their composition matrices are near-duplicates: that ensemble reaches
+0.7445, essentially the bundle's 0.7408, against 0.7582 for A's two density families. The decoder
+axis and the composition axis need different kinds of diversity — DPO supplies the first, distinct
+upstreams the second, and fusion needs both. `rl_dpo_auc_upstep500` / `_upstep1000` train DPO
+decoders on the bundle's drifted upstreams to get both in one member.
 
 ⚠️ **B is the informative negative-ish result:** six DPO checkpoints selected on *tanimoto* —
 i.e. ~0.018 per member below their own AUC peak — still fuse to 0.7871, level with the bundle.
