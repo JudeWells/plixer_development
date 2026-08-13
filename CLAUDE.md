@@ -105,12 +105,27 @@ weight-dependent: at the bundle's pre-committed w = 0.2 the DPO ensemble is *beh
 0.7883), because its more orthogonal readouts want w ≈ 0.5. A (mixed density) wins at every weight;
 D does not.
 
-🔑 **DPO is capped on the composition axis by construction.** RL freezes Poc2Mol, so all six DPO
-members share one density and their composition matrices are near-duplicates: that ensemble reaches
-0.7445, essentially the bundle's 0.7408, against 0.7582 for A's two density families. The decoder
-axis and the composition axis need different kinds of diversity — DPO supplies the first, distinct
-upstreams the second, and fusion needs both. `rl_dpo_auc_upstep500` / `_upstep1000` train DPO
-decoders on the bundle's drifted upstreams to get both in one member.
+🚨 **"DPO is capped on the composition axis by shared density" — TESTED AND REFUTED.** The
+reasoning was: RL freezes Poc2Mol, so all six DPO members share one density, their composition
+matrices are near-duplicates (0.7445, essentially the bundle's 0.7408, against A's 0.7582), and
+adding members on distinct upstreams should lift it. `rl_dpo_auc_upstep{500,1000}` trained DPO
+decoders on the bundle's drifted densities to test exactly that. Result, 8 members over 3
+densities against 6 over 1:
+
+| | 6 members, 1 density | 8 members, 3 densities |
+|---|---|---|
+| decoder | 0.7651 | 0.7731 |
+| composition | 0.7445 | **0.7474** |
+| fused | 0.7984 | **0.7983** |
+
+Composition moved **+0.003**, nowhere near A's 0.7582, and the fused number is unchanged. Two
+likely reasons: the bundle's drifted upstreams are barely distinct from the original (Dice
+0.4967 / 0.5006 vs 0.5028, its own §5), and two members in eight cannot move an average much.
+
+**A's edge looks like member QUALITY, not diversity** — its single-member composition is 0.7350
+against 0.7283 for the 3-density set. Or it is noise: A's 0.8057 remains one measurement of a
+4-member set on one panel, which is what `aucrep_*` (seeds 46/47) is meant to test. Do not repeat
+the density-diversity story; it was mine and it did not survive its own experiment.
 
 ⚠️ **B is the informative negative-ish result:** six DPO checkpoints selected on *tanimoto* —
 i.e. ~0.018 per member below their own AUC peak — still fuse to 0.7871, level with the bundle.
