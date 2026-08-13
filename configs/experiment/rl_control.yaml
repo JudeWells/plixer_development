@@ -1,0 +1,32 @@
+# @package _global_
+# THE RL CONTROL: identical rollout, identical measurement, lr = 0 so the policy never moves.
+#
+# All four RL arms improved on their own first validation by +0.0036 to +0.0062 tanimoto. That
+# is well below the ~0.018 the frozen baseline's seed spread (0.157 +- 0.009) says is readable,
+# and "best over 8 validation checks" is a maximum, which CLAUDE.md §6 warns is inflated by
+# selection on its own. So the improvement may be nothing but the max of a noisy series.
+#
+# This arm answers that directly: same sampling, same reward computation, same 200-sample
+# tanimoto measurement at the same 8 validation points -- but lr 0, so the policy is the
+# unchanged SFT checkpoint at every one of them. Whatever "improvement" this arm shows from
+# first-check to best-check is PURE MEASUREMENT NOISE, and it is the number the RL arms' gains
+# have to beat.
+#
+# It also supplies the honest baseline value at n=200 samples. The 0.157 figure from the frozen
+# W arms was measured at n=30 and read off at each arm's best-AUC step, so it is not a
+# like-for-like comparator for the numbers these RL runs report.
+defaults:
+  - rl_base
+  - _self_
+
+task_name: "rl_control"
+tags: ["${task_name}", "rl", "control", "v2", "11ch", "seed${seed}"]
+
+model:
+  objective: grpo
+  config:
+    lr: 0.0
+    scheduler:
+      # A warmup schedule multiplies a base lr of 0 by a ramp and gets 0, but pinning the type
+      # to constant removes any doubt that the policy is frozen.
+      type: "constant"

@@ -1,0 +1,10 @@
+# @package _global_
+# The RL control (see rl_control.yaml) at seed 43, matching the RL arms' seeds.
+defaults:
+  - rl_control
+  - _self_
+
+task_name: "rl_control_s43"
+tags: ["${task_name}", "rl", "control", "v2", "11ch", "seed${seed}"]
+
+seed: 43

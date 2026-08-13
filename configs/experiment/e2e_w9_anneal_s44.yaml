@@ -1,0 +1,22 @@
+# @package _global_
+# ARM W9 -- W4 REPLICATED at seed 44. Not a new idea; a measurement of the old one.
+#
+# W4 (0.7718) and W2 (0.7759) are each a single maximum over ~13 validation checks of a
+# metric CLAUDE.md §6 puts at +-0.02 between adjacent checks, and §6 further warns that
+# "best val X" carries a maximum-selection inflation of about +0.025. So the headline claim
+# -- that end-to-end beats the frozen baseline W0 (0.7575) by ~+0.015 -- currently rests on
+# a difference of the same order as the noise it is measured in.
+#
+# Three replicates at seeds 43/44/45, identical to W4 in every other respect, turn that into
+# a distribution. If the spread across seeds is comparable to the W4-W0 gap, the effect is
+# not established and no amount of further tuning on single runs will establish it. Runs take
+# ~20 minutes each, so this costs almost nothing and is the difference between a result and
+# an anecdote.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w9_anneal_s44"
+tags: ["${task_name}", "e2e", "arm_w9", "warm", "anneal", "replicate", "v2", "11ch", "seed${seed}"]
+
+seed: 44

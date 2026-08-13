@@ -1,0 +1,22 @@
+# @package _global_
+# DPO: best-vs-worst preference pairs drawn from the same 8-sample group.
+#
+# Identical rollout to the GRPO arm -- same group size, same sampling temperature, same
+# reference snapshot -- so the two differ ONLY in how the reward is turned into a gradient.
+# That is what makes the pair readable: GRPO uses the whole reward distribution as a
+# continuous advantage, DPO reduces each group to a single binary preference and throws the
+# magnitudes away.
+#
+# Pairs with a reward gap below dpo_min_margin are dropped, because at small gaps the
+# "preference" is sampling noise. Watch train/pairs: if it sits near zero the groups are too
+# uniform for DPO to have anything to learn from, which is the same diagnosis as a collapsed
+# train/reward_std_in_group on the GRPO side.
+defaults:
+  - rl_base
+  - _self_
+
+task_name: "rl_dpo"
+tags: ["${task_name}", "rl", "dpo", "v2", "11ch", "seed${seed}"]
+
+model:
+  objective: dpo

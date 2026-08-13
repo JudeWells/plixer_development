@@ -1,0 +1,26 @@
+# @package _global_
+# DPO at lr 2e-5 with the KL leash TIGHTENED to 0.1 (default 0.02). The decisive control.
+#
+# 2e-5 gives the best tanimoto so far (0.1787) but its ZINC cross-entropy rose 42% (0.0132 ->
+# 0.0188) and its AUC fell to 0.7460. Those are precisely the two things the KL penalty exists
+# to prevent, and kl_beta was tuned at lr 5e-6 -- four times lower. So there are two readings of
+# the high-LR gain and they are not distinguishable from the sweep alone:
+#
+#   (a) the larger step genuinely finds a better pocket-conditioned policy;
+#   (b) the larger step lets the policy escape a leash calibrated for a smaller one, and part of
+#       the "gain" is drift towards the unconditional HiQBind scaffold distribution -- the
+#       degenerate optimum of a Tanimoto reward, which does not need the pocket at all.
+#
+# Tightening the leash separates them. If tanimoto HOLDS near 0.1787 while zinc loss and AUC
+# recover towards 0.0132 / 0.759, reading (a) is right and the gain is real. If tanimoto
+# collapses back towards the 5e-6 level as soon as the leash is tightened, reading (b) is right
+# and 0.1787 should never be quoted as a result.
+defaults:
+  - rl_dpo_const_lr2e5
+  - _self_
+
+task_name: "rl_dpo_lr2e5_kb01"
+tags: ["${task_name}", "rl", "dpo", "constlr", "klsweep", "v2", "11ch", "seed${seed}"]
+
+model:
+  kl_beta: 0.1

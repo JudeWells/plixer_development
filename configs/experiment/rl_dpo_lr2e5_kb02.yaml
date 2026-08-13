@@ -1,0 +1,23 @@
+# @package _global_
+# DPO at lr 2e-5, KL leash 0.2 -- extending the KL sweep to find the diversity/reward frontier.
+#
+# The diversity audit (results/e2e/diversity.json) showed the lr 2e-5 policy raises tanimoto
+# 0.147 -> 0.190 while within-pocket self-similarity goes 0.133 -> 0.446 and distinct Murcko
+# scaffolds fall 0.536 -> 0.400. Specificity did NOT collapse (0.051 -> 0.068), so this is not
+# reward hacking -- but a quarter of the scaffold diversity was spent buying that reward, and
+# nothing logged at the time would have shown it.
+#
+# kl_beta is the knob that trades the two. 0.02 (default, tuned at lr 5e-6) is evidently too
+# loose at 2e-5; 0.05 and 0.1 are running. This extends the sweep far enough to bracket the
+# point where diversity returns, even if tanimoto gives ground. Runs launched from now on log
+# val/*/uniqueness, self_sim and specificity directly, so the frontier can be read off the
+# curves instead of reconstructed from checkpoints afterwards.
+defaults:
+  - rl_dpo_const_lr2e5
+  - _self_
+
+task_name: "rl_dpo_lr2e5_kb02"
+tags: ["${task_name}", "rl", "dpo", "constlr", "klsweep", "v2", "11ch", "seed${seed}"]
+
+model:
+  kl_beta: 0.2

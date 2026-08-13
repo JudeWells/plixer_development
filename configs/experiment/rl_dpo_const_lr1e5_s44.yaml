@@ -1,0 +1,11 @@
+# @package _global_
+# Constant-LR DPO at 1e-5, seed 44. 1e-5 is the best setting found: 0.1662 against 0.154
+# (5e-6) and 0.1463 (2e-6), on a single seed each -- replicated here before it is believed.
+defaults:
+  - rl_dpo_const_lr1e5
+  - _self_
+
+task_name: "rl_dpo_const_lr1e5_s44"
+tags: ["${task_name}", "rl", "dpo", "constlr", "lrsweep", "v2", "11ch", "seed${seed}"]
+
+seed: 44

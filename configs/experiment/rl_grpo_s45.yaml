@@ -1,0 +1,13 @@
+# @package _global_
+# GRPO at seed 45, taking GRPO to four seeds to match DPO.
+#
+# DPO leads GRPO in every seed so far (0.1469-0.1495 against 0.1439-0.1460), a gap of ~+0.003
+# against seed sds of ~0.001-0.0015. Suggestive, but on two GRPO seeds against four DPO ones.
+defaults:
+  - rl_grpo
+  - _self_
+
+task_name: "rl_grpo_s45"
+tags: ["${task_name}", "rl", "grpo", "v2", "11ch", "seed${seed}"]
+
+seed: 45

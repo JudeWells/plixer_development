@@ -1,0 +1,81 @@
+# RL fine-tuning of the decoder against a Tanimoto reward. Poc2Mol frozen throughout.
+#
+# The upstream is not merely left alone, it is hard-frozen in the module regardless of what is
+# configured here: the end-to-end gradient measured −0.0024 (paired, 8 seeds, n.s.) while
+# multiplying run-to-run variance 7x, so letting it move again would add noise to an experiment
+# about the language model. See src/models/rl_vox2smiles.py.
+defaults:
+  - /model@poc2mol_model: poc2mol_frozen
+  - _self_
+
+_target_: src.models.rl_vox2smiles.RLVox2Smiles
+
+poc2mol_ckpt_path: checkpoints/poc2mol_v2/poc2mol_v2_11ch_ep576.ckpt
+
+# "grpo" or "dpo". Overridden per experiment.
+objective: grpo
+
+# Completions sampled per pocket. GRPO's baseline is the mean of this group, so the advantage
+# is only as informative as the group is diverse -- at 8 the standardised advantage is usable
+# and the rollout is still the dominant cost (8 x batch_size sequences generated per step).
+group_size: 8
+
+# The rollout must actually explore. If sampling is too cold every member of a group is the
+# same molecule, the group std collapses and the advantage becomes 0/0 -- visible as
+# train/reward_std_in_group going to zero, which is the first thing to check if nothing learns.
+sample_temperature: 1.0
+top_p: 0.95
+max_generation_length: 200
+
+# KL leash to the starting policy (GRPO only; DPO carries its reference inside its own loss).
+# A Tanimoto reward is trivially hackable -- the degenerate optimum is to ignore the pocket and
+# always emit the most common HiQBind scaffold -- and this is what stops that. Raise it if
+# val/zinc/loss climbs or generations collapse to one molecule.
+kl_beta: 0.02
+
+# Standard DPO inverse-temperature.
+dpo_beta: 0.1
+# Below this reward gap the "preference" is sampling noise, and training on it teaches the
+# model to discriminate between molecules that are equally good.
+dpo_min_margin: 0.05
+
+inject_protein: false
+visualise_val: false
+
+# Raised from 30. Tanimoto is now the OBJECTIVE rather than a bystander metric, so it needs to
+# be measured tightly enough to read a trend; at 30 the SE on it is far too wide to tell a real
+# gain from noise.
+n_samples_for_validity_testing: 200
+
+poc2mol_model:
+  config:
+    out_channels: 11
+
+config:
+  hidden_size: 768
+  num_hidden_layers: 8
+  num_attention_heads: 8
+  intermediate_size: 3072
+  hidden_act: "gelu"
+  hidden_dropout_prob: 0.0
+  attention_probs_dropout_prob: 0.0
+  initializer_range: 0.02
+  layer_norm_eps: 1e-12
+  image_size: [32, 32, 32]
+  patch_size: 4
+  num_channels: 11
+  qkv_bias: True
+  encoder_stride: 2
+  # An order of magnitude below the 5e-5 used for supervised fine-tuning. A policy-gradient
+  # update is far higher variance than a cross-entropy one, and the starting policy is already
+  # good -- this is the knob to sweep first if the run destabilises.
+  lr: 5e-6
+  weight_decay: 0.01
+  torch_dtype: "bfloat16"
+  scheduler:
+    type: "warmup_stable_decay"
+    num_warmup_steps: 25
+    num_stable_steps: 175
+    num_decay_steps: 200
+    min_lr_ratio: 0.05
+    interval: "step"

@@ -1,0 +1,10 @@
+# @package _global_
+# Constant-LR DPO (see rl_dpo_const.yaml) at seed 43.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_const_s43"
+tags: ["${task_name}", "rl", "dpo", "constlr", "v2", "11ch", "seed${seed}"]
+
+seed: 43

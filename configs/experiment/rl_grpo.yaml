@@ -1,0 +1,24 @@
+# @package _global_
+# GRPO: group-standardised REINFORCE on the Tanimoto reward.
+#
+# Sample 8 completions per pocket, standardise the rewards within that pocket's group, use it
+# as the advantage on the length-normalised sequence log-probability, and hold the policy near
+# its starting point with a KL penalty. The within-group baseline is the essential part:
+# pockets differ enormously in how well ANY model can do on them, so a global baseline would
+# mostly reward easy pockets rather than good generations.
+#
+# What to watch, in order:
+#   train/reward_std_in_group  -- if this collapses to ~0 the group carries no preference
+#                                 information and nothing can be learned. Raise sample_temperature.
+#   train/reward_mean          -- the thing being optimised.
+#   train/kl                   -- if it runs away the policy is escaping the leash; raise kl_beta.
+#   val/zinc/loss              -- the forgetting tripwire.
+defaults:
+  - rl_base
+  - _self_
+
+task_name: "rl_grpo"
+tags: ["${task_name}", "rl", "grpo", "v2", "11ch", "seed${seed}"]
+
+model:
+  objective: grpo

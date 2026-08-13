@@ -1,0 +1,32 @@
+# @package _global_
+# ARM W11 -- W4 with a LONGER schedule: does the anneal want more room?
+#
+# W4's peak moved to step 499, from W2's 312, when the decay was resized to start at 300 and
+# finish at 700. That is the signature of a schedule that is now roughly the right shape: the
+# model climbs through the stable phase and peaks inside the decay rather than blowing past
+# its optimum at full rate. But the peak landing at 499 -- two thirds of the way through the
+# 700-step schedule and still rising into it -- leaves open whether it would go further with
+# more stable phase before the anneal begins.
+#
+# 50 warmup / 450 stable / 600 decay, so the decay starts at 500 (where W4 peaked) and runs
+# to 1100. If the peak simply tracks the decay window again, the schedule is the binding
+# constraint and there is more to be had by lengthening it further. If it plateaus around
+# 500-600 regardless, the model has found its optimum and the schedule is no longer what
+# limits it -- which is the more useful negative result, because it redirects effort away
+# from schedule tuning entirely.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w11_anneal_long"
+tags: ["${task_name}", "e2e", "arm_w11", "warm", "anneal", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    scheduler:
+      num_warmup_steps: 50
+      num_stable_steps: 450
+      num_decay_steps: 600
+
+trainer:
+  max_steps: 1200

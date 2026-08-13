@@ -1,0 +1,13 @@
+# @package _global_
+# The SFT comparator (see sft_n200.yaml) at seed 44, taking it to four seeds.
+#
+# It is the weakest leg of the RL comparison: DPO and GRPO each have four seeds, SFT two, and
+# it is the denominator of both headline claims (DPO - SFT = +0.0038, GRPO - SFT = +0.0000).
+defaults:
+  - sft_n200
+  - _self_
+
+task_name: "sft_n200_s44"
+tags: ["${task_name}", "sft", "comparator", "v2", "11ch", "seed${seed}"]
+
+seed: 44

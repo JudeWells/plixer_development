@@ -1,0 +1,35 @@
+# @package _global_
+# ARM W3 -- W2 with the DECODER's learning rate halved-and-then-some, 5e-5 -> 2e-5.
+#
+# Every other arm in both sweeps runs the decoder at stage 3's 5e-5. That rate was chosen for
+# a decoder arriving from ZINC-only pretraining with a great deal left to learn about pocket
+# density. This ladder's decoder has already done those 3000 steps, so the same rate is now
+# being applied to a model much closer to convergence, over 9,872 HiQBind clusters -- the
+# setting where §6's warning about overfitting a small cluster count bites hardest.
+#
+# W3 against W2 isolates it. Read the pair together with val/zinc/loss: the specific failure
+# this arm is designed to catch is the decoder buying pocket performance by forgetting ZINC,
+# which shows up there long before val/likelihood_auc_znorm turns over.
+#
+# If W0 (frozen upstream, 5e-5) bends downward over the run, that is the same diagnosis from
+# the other direction, and this arm is where the fix already is.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_w3_warm_declr2e5"
+tags: ["${task_name}", "e2e", "arm_w3", "warm", "v2", "11ch", "seed${seed}"]
+
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+
+logger:
+  wandb:
+    group: "e2e_warm_v1"
+    tags: ["e2e", "warm", "v2", "11ch"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true
+  config:
+    lr: 2e-5

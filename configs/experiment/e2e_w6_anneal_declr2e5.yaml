@@ -1,0 +1,25 @@
+# @package _global_
+# ARM W6 -- the anneal schedule on the STABLE decoder rate. W4 with decoder lr 5e-5 -> 2e-5.
+#
+# Two separate findings from the first warm ladder, combined:
+#   W2 (decoder 5e-5) reached the highest peak of any arm, 0.7759 at step 312, then fell to
+#      0.7271 by step 874 -- the highest and the least stable.
+#   W3 (decoder 2e-5) peaked lower, 0.7620, but was still at 0.7602 at step 937 -- it barely
+#      decays at all.
+# The natural reading is that 5e-5 moves fast enough to find the good region and then fast
+# enough to leave it, while 2e-5 never quite gets there but stays where it lands. An anneal
+# is exactly the instrument for that: reach the region at a useful rate, then decay into it
+# instead of straight through.
+#
+# W6 - W4 isolates the decoder rate under the annealed schedule; W6 - W3 isolates the anneal
+# at the stable rate.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w6_anneal_declr2e5"
+tags: ["${task_name}", "e2e", "arm_w6", "warm", "anneal", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    lr: 2e-5

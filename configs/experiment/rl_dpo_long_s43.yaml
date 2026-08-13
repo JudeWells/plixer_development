@@ -1,0 +1,10 @@
+# @package _global_
+# Extended DPO (see rl_dpo_long.yaml) at seed 43.
+defaults:
+  - rl_dpo_long
+  - _self_
+
+task_name: "rl_dpo_long_s43"
+tags: ["${task_name}", "rl", "dpo", "long", "v2", "11ch", "seed${seed}"]
+
+seed: 43

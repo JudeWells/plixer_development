@@ -1,0 +1,12 @@
+# @package _global_
+# ARM W14 -- the matched frozen control (W12) at seed 44. See e2e_w12_frozen_anneal.yaml
+# for why the control needs replicating at all: the effect being tested is smaller than the
+# seed-to-seed spread of 0.0210 measured on the end-to-end arm.
+defaults:
+  - e2e_w12_frozen_anneal
+  - _self_
+
+task_name: "e2e_w14_frozen_anneal_s44"
+tags: ["${task_name}", "e2e", "arm_w14", "warm", "anneal", "control", "v2", "11ch", "seed${seed}"]
+
+seed: 44

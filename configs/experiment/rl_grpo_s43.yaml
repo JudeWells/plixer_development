@@ -1,0 +1,15 @@
+# @package _global_
+# GRPO at seed 43. Two seeds per objective from the start, deliberately.
+#
+# This project has already spent four rounds reading a noise floor as signal. The frozen
+# baseline's tanimoto across seeds 42-49 is 0.157 +- 0.009, so a single RL arm showing +0.01
+# would mean nothing on its own. Two seeds is not enough to prove an effect either -- it is
+# enough to notice immediately if the two disagree, which is the cheap version of the lesson.
+defaults:
+  - rl_grpo
+  - _self_
+
+task_name: "rl_grpo_s43"
+tags: ["${task_name}", "rl", "grpo", "v2", "11ch", "seed${seed}"]
+
+seed: 43

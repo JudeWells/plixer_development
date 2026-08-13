@@ -1,0 +1,11 @@
+# @package _global_
+# ARM W23 -- end-to-end (W4's config) at seed 49, completing the 8-vs-8 paired comparison.
+# See e2e_w20_e2e_s46.yaml for why the replication matters more than another idea here.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w23_e2e_s49"
+tags: ["${task_name}", "e2e", "arm_w23", "warm", "anneal", "replicate", "v2", "11ch", "seed${seed}"]
+
+seed: 49

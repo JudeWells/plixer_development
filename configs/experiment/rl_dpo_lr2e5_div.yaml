@@ -1,0 +1,13 @@
+# @package _global_
+# The reference lr 2e-5 / kl_beta 0.02 setting, re-run purely to log the NEW diversity metrics.
+#
+# The original 2e-5 arm predates val/*/{uniqueness,self_sim,specificity}, so its diversity is
+# known only from a post-hoc checkpoint audit at a single step. This gives the full trajectory,
+# which is what says WHEN diversity is lost -- early with the reward, or late as the policy
+# saturates. That distinction decides whether early stopping on specificity is a viable fix.
+defaults:
+  - rl_dpo_const_lr2e5
+  - _self_
+
+task_name: "rl_dpo_lr2e5_div"
+tags: ["${task_name}", "rl", "dpo", "constlr", "diversity", "v2", "11ch", "seed${seed}"]

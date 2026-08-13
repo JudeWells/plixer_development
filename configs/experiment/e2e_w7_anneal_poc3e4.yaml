@@ -1,0 +1,32 @@
+# @package _global_
+# ARM W7 -- W4 with the UPSTREAM rate pushed further, poc2mol_lr 1e-4 -> 3e-4.
+#
+# The warm ladder's three upstream settings do not sit where the caution in
+# configs/model/end_to_end.yaml predicted. That comment reasoned that Poc2Mol arrives 576
+# epochs deep and receiving an unfamiliar gradient, so it wants a rate well below the 1e-4 it
+# was trained at. Measured, the opposite:
+#
+#     poc2mol_lr    best AUC
+#     0 (frozen)     0.7575   W0
+#     1e-5           0.7507   W1   -- below the frozen baseline
+#     1e-4           0.7759   W2   -- the best number of either ladder
+#
+# More upstream movement is better across the range tested, and the gentle setting is not
+# merely weaker than 1e-4, it is worse than not moving at all -- consistent with a small
+# perturbation that disturbs the density the decoder was fine-tuned against without going far
+# enough to find anything better. This arm extrapolates one step further.
+#
+# It is also the arm most likely to break the density: W2 already pulled Dice down to 0.4870
+# from the 0.5027 yardstick, and this triples the rate that did it. Read val/poc2mol/dice
+# beside the AUC -- if the AUC climbs while Dice collapses, Poc2Mol has stopped being a
+# density model and the win is not the kind this project can use. Arm W5 is testing the
+# other response to the same risk (a heavier anchor at the 1e-4 rate).
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w7_anneal_poc3e4"
+tags: ["${task_name}", "e2e", "arm_w7", "warm", "anneal", "v2", "11ch", "seed${seed}"]
+
+model:
+  poc2mol_lr: 3e-4

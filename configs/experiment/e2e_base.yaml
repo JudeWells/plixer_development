@@ -1,0 +1,86 @@
+# @package _global_
+# End-to-end Poc2Mol -> Vox2Smiles, shared settings for every arm.
+#
+# The question: does letting the language-modelling loss reach Poc2Mol produce a density the
+# decoder can read better than the one reconstruction Dice asks for?
+#
+# THE COMPARISON IS ARM Z, NOT 0.7522. The published stage-3 figure came from a run whose
+# validation was stochastic (see the note in vox2smiles_e2e_v2_11ch.yaml); this experiment
+# validates deterministically, so arm Z re-measures the frozen-upstream baseline in this
+# regime and every other arm is read against it. For outside context, the parameter-free
+# composition readout scores 0.7615 (§14d) -- below that nothing is earning its keep.
+#
+# Watch val/poc2mol/dice throughout, against 0.5027 (it uses the same definition as
+# density_diagnostics.py, so the two are directly comparable). An AUC win bought by
+# destroying the density is not a win -- it means Poc2Mol has stopped being a density model
+# and become a private code for the decoder.
+#
+# Held identical to exp1_s3_v2_11ch.yaml wherever it can be: same decoder checkpoint, same
+# data, same decoy panel, same effective batch, same selection metric. The arms differ only
+# in how the two supervision signals are balanced.
+defaults:
+  - _self_
+  - override /data: vox2smiles_e2e_v2_11ch
+  - override /model: end_to_end
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "e2e"
+tags: ["${task_name}", "e2e", "v2", "11ch", "seed${seed}"]
+
+train: True
+test: False
+optimized_metric: "val/likelihood_auc_znorm"
+ckpt_path: null
+# Decoder weights only. Poc2Mol's come in separately via model.poc2mol_ckpt_path -- they are
+# in a different file, and this hook takes one path. The Poc2Mol keys will be reported
+# missing here; that is expected and not a mismatch.
+init_weights_from: checkpoints/s1_v2/s1_v2_11ch_ep14_step247256.ckpt
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "e2e_v1"
+    job_type: "end_to_end"
+    tags: ["e2e", "v2", "11ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 12
+  inject_protein: false
+
+model:
+  override_optimizer_on_load: true
+  visualise_val: false
+
+callbacks:
+  early_stopping:
+    # The RANKING metric, never val/loss -- §18h measured them anti-correlated. Noisy at
+    # +-0.02 between adjacent checks, hence the generous patience.
+    _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    patience: 12
+    min_delta: 0.0
+    check_on_train_epoch_end: False
+    verbose: True
+  model_checkpoint:
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    save_top_k: 2
+    save_last: True
+    # Keep the optimiser state: a weights-only checkpoint makes any resume lossy, and this
+    # checkpoint now carries BOTH models, so it is the only complete record of the run.
+    save_weights_only: False
+    filename: "step_{step:07d}_auc_{val/likelihood_auc_znorm:.4f}"
+    auto_insert_metric_name: False
+
+trainer:
+  devices: 2
+  val_check_interval: 250
+  max_steps: 4000
+  max_epochs: 50

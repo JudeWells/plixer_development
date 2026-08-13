@@ -1,0 +1,42 @@
+# @package _global_
+# ARM W0 -- THE WARM BASELINE. Decoder starts from a stage-3 checkpoint; Poc2Mol frozen.
+#
+# The W ladder repeats the e2e question from a DIFFERENT starting point. The Z/D/B/C arms
+# start the decoder from stage 1 (ZINC only), so it meets Poc2Mol's density for the first
+# time at step 0 and spends its first ~1000 steps learning to read it at all. These arms
+# start it from a decoder that has already been through stage 3 against this very Poc2Mol
+# (checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt, AUC 0.7576 in the stochastic-val
+# regime that run used). The premise: the end-to-end gradient is a refinement, and it should
+# be given a decoder that is already competent rather than one still finding its feet.
+#
+# ⚠️ That checkpoint descends from the SHORT stage 1 (s1_v2_11ch.ckpt, 57k steps), whereas
+# the Z/D/B/C arms use the 4.3x-scaled one (s1_v2_11ch_ep14_step247256.ckpt), which §22d
+# measured as worth +0.010 AUC on its own. So W-vs-Z/D/B/C carries that confound in the
+# WRONG direction for the warm arms -- they start from the weaker ancestry. Within the W
+# ladder there is no confound: every arm shares this checkpoint.
+#
+# WHAT THIS ARM MEASURES. Continuing to fine-tune the warm decoder against a fixed upstream,
+# i.e. simply doing more stage 3. Every other W arm must beat THIS, not 0.7576 (a different
+# validation regime) and not arm Z (a different decoder ancestry). It is also the arm that
+# reveals overfitting: 9,872 HiQBind clusters is not many, and if the warm decoder is
+# already converged this curve will bend down while the LM loss keeps falling.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_w0_warm_frozen"
+tags: ["${task_name}", "e2e", "arm_w0", "warm", "baseline", "v2", "11ch", "seed${seed}"]
+
+# Stage-3 decoder, NOT stage 1. Poc2Mol's weights still come in separately via
+# model.poc2mol_ckpt_path; its keys will be reported missing here, which is expected.
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+
+logger:
+  wandb:
+    group: "e2e_warm_v1"
+    tags: ["e2e", "warm", "v2", "11ch"]
+
+model:
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false

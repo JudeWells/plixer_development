@@ -1,0 +1,31 @@
+# @package _global_
+# ARM W5 -- W4 plus a HEAVIER DENSITY ANCHOR (voxel_loss_weight 1.0 -> 3.0).
+#
+# W2's peak came with its Dice falling to 0.4870, against the 0.5027 yardstick, and the two
+# moved together: the AUC decayed as the density degraded. Every end-to-end arm in both
+# ladders shows the same coupling (cold arm B: 0.4806; arm C, the loosest anchor at weight
+# 0.1, is the worst performer of its ladder). That is the failure mode CLAUDE.md §0 warns
+# about -- Poc2Mol drifting from a density model towards a private code for the decoder --
+# and it appears to cost AUC rather than buy it.
+#
+# The smoke-test calibration explains why weight 1.0 is not the neutral setting it looks
+# like: at that weight the LM gradient arriving at Poc2Mol already has a LARGER norm than the
+# reconstruction gradient (16.6 against 9.5). So "anchored at 1.0" is really LM-led, and 3.0
+# is roughly where the two balance.
+#
+# W5 - W4 therefore isolates whether holding the density near 0.5027 preserves the peak that
+# W2 reached and then lost. Read val/poc2mol/dice and val/likelihood_auc_znorm together; the
+# hypothesis is specifically that they stop diverging.
+#
+# Inherits from e2e_w4_anneal rather than restating it, so the annealed schedule AND the
+# one-checkpoint-per-arm cap stay in lockstep with the rest of the anneal family. An earlier
+# revision copied the schedule by hand and silently missed the cap.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w5_anneal_anchor3"
+tags: ["${task_name}", "e2e", "arm_w5", "warm", "anneal", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 3.0

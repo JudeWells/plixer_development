@@ -1,0 +1,12 @@
+# @package _global_
+# Constant-LR DPO (see rl_dpo_const.yaml) at seed 45. Seed replication of the reference LR,
+# so the LR sweep above can be read against a proper estimate of seed spread rather than
+# against a single draw.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_const_s45"
+tags: ["${task_name}", "rl", "dpo", "constlr", "v2", "11ch", "seed${seed}"]
+
+seed: 45

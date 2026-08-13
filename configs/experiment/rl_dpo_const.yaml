@@ -1,0 +1,40 @@
+# @package _global_
+# DPO at CONSTANT learning rate, long horizon. A diagnostic to find the right step count.
+#
+# WHY. The 1200-step runs used warmup 50 / stable 550 / decay 600, so the LR falls from 5e-6
+# at step 600 to 2.5e-7 at 1200 -- 68% of peak by step 800, 37% by 1000. Their apparent
+# "plateau" from ~step 600 onward is therefore uninterpretable: a converged model and a model
+# whose learning rate was annealed away produce the same flat curve, and the very tight
+# second-half spread (sd 0.0008) that looked like evidence of convergence is exactly what a
+# decaying LR manufactures. `val/likelihood_auc_znorm` was still RISING when the decay began.
+#
+# Early stopping made it worse: seed 42 was killed at step 999 for "not improving", but by then
+# it was running at 37% of peak LR, so not-improving was partly by construction.
+#
+# So: constant 5e-6 after a 50-step warmup, 3000 steps, and early stopping effectively disabled
+# (patience 100 checks = 5000 steps, far beyond max_steps). Nothing here anneals and nothing
+# terminates the run early. The output is the SHAPE of the curve -- where it actually turns
+# over -- and that is what should set max_steps and the decay position for every subsequent
+# DPO run. Fit the schedule to the measured optimum, not the reverse (§19d, and the same rule
+# that fixed the AUC arms in the other direction).
+defaults:
+  - rl_dpo
+  - _self_
+
+task_name: "rl_dpo_const"
+tags: ["${task_name}", "rl", "dpo", "constlr", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    scheduler:
+      type: "constant_with_warmup"
+      num_warmup_steps: 50
+
+callbacks:
+  early_stopping:
+    # 100 checks x 50 steps = 5000 steps, i.e. it can never fire inside max_steps. Kept present
+    # rather than removed so the callback list stays identical to the other arms.
+    patience: 100
+
+trainer:
+  max_steps: 3000

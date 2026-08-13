@@ -1,0 +1,23 @@
+# @package _global_
+# ARM W18 -- frozen pipeline, seed 48. Two jobs at once.
+#
+# 1. TIGHTEN THE BASELINE. sigma = 0.0047 is estimated from four seeds, so it is itself only
+#    known to about +-40%. Eight seeds halves that uncertainty, and sigma is now the quantity
+#    every future comparison on this metric will be judged against -- it is what says an
+#    effect of 0.01 is detectable and an effect of 0.002 is not.
+# 2. SUPPLY ENSEMBLE MEMBERS. §20 measures model ensembling at +0.030, the largest
+#    training-side effect recorded in this project and far above the 0.0047 noise floor. Eight
+#    independently-seeded frozen models is exactly the pool that needs, and they cost 20
+#    minutes each on 2 GPUs.
+#
+# ⚠️ §20 also warns that ensemble members must be normalised with the SAME transform the
+# metric applies (column z-norm). Row-standardising while the metric z-normalises by column
+# inflated every ensemble figure in that experiment by ~+0.005.
+defaults:
+  - e2e_w12_frozen_anneal
+  - _self_
+
+task_name: "e2e_w18_frozen_s48"
+tags: ["${task_name}", "e2e", "arm_w18", "warm", "frozen", "ensemble", "v2", "11ch", "seed${seed}"]
+
+seed: 48

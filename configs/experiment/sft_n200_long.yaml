@@ -1,0 +1,33 @@
+# @package _global_
+# The SFT comparator, extended 800 -> 1600 steps.
+#
+# Extending DPO to 1200 steps while leaving its comparator at 800 would manufacture the very
+# result the extension is meant to test. SFT's tails are still rising too -- seed 44 runs
+# 0.1409, 0.1453, 0.1457, 0.1467, 0.1472 over its last five checks -- so 800 steps is not
+# obviously its convergence point either.
+#
+# ⚠️ This is matched in STEPS, not in compute. A DPO step generates group_size = 8 molecules
+# autoregressively per pocket and runs two extra teacher-forced passes; an SFT step does one
+# forward and one backward. So step-matching is generous to DPO on wall-clock and FLOPs alike.
+# The honest framing is "each method run to its own convergence", which is what both of these
+# extensions are for -- not "equal budget".
+defaults:
+  - sft_n200
+  - _self_
+
+task_name: "sft_n200_long"
+tags: ["${task_name}", "sft", "comparator", "long", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    scheduler:
+      num_warmup_steps: 50
+      num_stable_steps: 750
+      num_decay_steps: 800
+
+callbacks:
+  early_stopping:
+    patience: 20
+
+trainer:
+  max_steps: 1600

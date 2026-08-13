@@ -1,0 +1,20 @@
+# @package _global_
+# DPO constant LR 2e-6 -- 0.4x the reference. If the 5e-6 curve is noisy or overshoots, the optimum is below it.
+#
+# Constant LR throughout (warmup 50 then flat), 3000 steps, early stopping unreachable --
+# identical to rl_dpo_const in every respect except the value being swept. Nothing anneals, so
+# a difference between these arms is a difference in the LEARNING RATE and not in how much of
+# each run was spent at a decayed rate. See the retraction note in CLAUDE.md §0 for why that
+# matters here.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_const_lr2e6"
+tags: ["${task_name}", "rl", "dpo", "constlr", "lrsweep", "v2", "11ch", "seed${seed}"]
+
+seed: 42
+
+model:
+  config:
+    lr: 2e-6

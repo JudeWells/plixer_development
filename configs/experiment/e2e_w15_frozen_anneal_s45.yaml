@@ -1,0 +1,16 @@
+# @package _global_
+# ARM W15 -- the matched frozen control (W12) at seed 45, completing the 4-vs-4.
+#
+# Seeds 42/43/44/45 on both sides: the end-to-end arm (W4/W8/W9/W10) and this frozen control
+# (W12/W13/W14/W15). Same schedule, same data, same decoder checkpoint, same seeds -- the only
+# difference is the three switches that sever the upstream. Pairing the seeds matters: the
+# spread is 0.021 and much of it is presumably shared batch-order and augmentation noise, so a
+# paired comparison is considerably more sensitive than two independent means.
+defaults:
+  - e2e_w12_frozen_anneal
+  - _self_
+
+task_name: "e2e_w15_frozen_anneal_s45"
+tags: ["${task_name}", "e2e", "arm_w15", "warm", "anneal", "control", "v2", "11ch", "seed${seed}"]
+
+seed: 45

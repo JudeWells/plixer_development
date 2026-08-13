@@ -1,0 +1,50 @@
+# @package _global_
+# DPO ensemble member for the AUC evaluation: lr 2e-5, seed 42.
+#
+# ⚠️ CHECKPOINTS ON AUC, NOT TANIMOTO. Every RL run before this selected on
+# val/poc2mol/tanimoto, which peaks LATE (step ~1900-2850); val/likelihood_auc_znorm peaks
+# EARLY (step ~200-900) and has decayed to ~0.74 by the time tanimoto is best. So the
+# high-AUC DPO models were never written to disk -- the saved ones are the wrong end of the
+# same runs. max_steps 1200 because that comfortably covers the AUC peak; running to 3000
+# would only spend GPU time past it.
+#
+# MEMBER DIVERSITY IS BY LR *AND* SEED, deliberately. An earlier decoder ensemble here failed
+# (+0.0052, below its own best member) because its eight members differed only by seed off a
+# shared warm start: member-member correlation was 0.948, i.e. 1.05 effective models out of 8.
+# Ensembling pays only to the extent members are decorrelated, and LR is the axis most likely
+# to move them apart. Smoothed AUC is flat across 5e-6..2e-5 (0.7610-0.7654, within the
+# +-0.0038 per-run sigma), so spanning that range costs almost nothing in member quality.
+#
+# Target: the packaged end-to-end ensemble reports 0.7818 (6 ckpt x 4 aug, decoder only) and
+# 0.7883 fused with the composition readout, against 0.7612 for a single checkpoint. DPO's
+# smoothed single-model AUC is 0.7610-0.7654, already at or above that single-checkpoint
+# figure, and its members should be more diverse than seed-only replicates.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_auc_2e5_s42"
+tags: ["${task_name}", "rl", "dpo", "auc_member", "v2", "11ch", "seed${seed}"]
+
+seed: 42
+optimized_metric: "val/likelihood_auc_znorm"
+
+model:
+  config:
+    lr: 2e-5
+
+callbacks:
+  early_stopping:
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    patience: 100
+  model_checkpoint:
+    monitor: "val/likelihood_auc_znorm"
+    mode: "max"
+    save_top_k: 1
+    save_last: False
+    filename: "step_{step:07d}_auc_{val/likelihood_auc_znorm:.4f}"
+    auto_insert_metric_name: False
+
+trainer:
+  max_steps: 1200

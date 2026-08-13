@@ -1,0 +1,19 @@
+# @package _global_
+# ARM W21 -- end-to-end (W4's config) at seed 47, extending the paired comparison to 8-vs-8.
+#
+# The frozen control now has eight seeds (42-49): mean 0.7589, sigma 0.0059. The end-to-end
+# side has only four (42-45), so the headline paired test rests on 3 degrees of freedom. These
+# arms take it to eight matched pairs, which roughly halves the standard error on the
+# difference and firms up the second finding -- that end-to-end training inflates run-to-run
+# variance ~4x in sigma -- from a 4-sample variance ratio, which is a very noisy statistic.
+#
+# This is deliberately NOT a new idea. The experiment is finished; this is the replication
+# that makes the null publishable rather than suggestive.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w21_e2e_s47"
+tags: ["${task_name}", "e2e", "arm_w21", "warm", "anneal", "replicate", "v2", "11ch", "seed${seed}"]
+
+seed: 47

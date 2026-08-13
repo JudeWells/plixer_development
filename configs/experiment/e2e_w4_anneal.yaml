@@ -1,0 +1,66 @@
+# @package _global_
+# ARM W4 -- W2's settings with the LR SCHEDULE RESIZED TO THE OBSERVED OPTIMUM.
+#
+# W2 (warm decoder, poc2mol_lr 1e-4, LM gradient on) reached val/likelihood_auc_znorm 0.7759
+# at step 312 -- the best number either ladder has produced, and in the deterministic
+# validation regime, so it is not carrying §6's ~+0.025 maximum-selection inflation the way
+# the published 0.7759 does. It then decayed to 0.7432 by step 812.
+#
+# Every arm in both sweeps does this: peak between step 250 and 900, then decline. Meanwhile
+# the schedule is warmup 200 / stable 1800 / decay 2000, sized for max_steps 4000. So the
+# model sits at the full 5e-5 for thousands of steps past its own optimum and NEVER REACHES
+# THE ANNEAL -- CLAUDE.md §6 records exactly this ("one run put decay at step 6000 while
+# early stopping fired at ~4500, so no arm ever saw the anneal"), and §19d measured fixing it
+# worth +15% Tanimoto.
+#
+# So: 50 warmup / 250 stable / 400 decay, and max_steps 800. The decay now starts at step 300
+# -- right where W2 peaked -- and the run anneals INTO its optimum instead of blowing through
+# it at full rate. Nothing else changes from W2.
+#
+# early_stopping patience is raised to 40 checks deliberately. Validation runs every
+# val_check_interval BATCHES, not optimiser steps, so at 1 GPU (accumulate 8) it fires every
+# ~31 steps; the inherited patience of 12 would cut the run at ~390 steps and kill the anneal
+# this arm exists to test. The 800-step cap is what ends the run.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_w4_anneal"
+tags: ["${task_name}", "e2e", "arm_w4", "warm", "anneal", "v2", "11ch", "seed${seed}"]
+
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+
+logger:
+  wandb:
+    group: "e2e_warm_v1"
+    tags: ["e2e", "warm", "anneal", "v2", "11ch"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true
+  config:
+    scheduler:
+      type: "warmup_stable_decay"
+      num_warmup_steps: 50
+      num_stable_steps: 250
+      num_decay_steps: 400
+      min_lr_ratio: 0.05
+      interval: "step"
+
+callbacks:
+  early_stopping:
+    patience: 40
+  model_checkpoint:
+    # ⚠️ An end-to-end checkpoint is 2.4 GB, not the ~1 GB a decoder-only one is: it carries
+    # BOTH models plus AdamW state for 289M parameters. The inherited `save_top_k: 2` +
+    # `save_last: True` is therefore 7 GB per arm, and six concurrent arms filled a 193 GB
+    # disk in 45 minutes -- which killed four runs mid-flight with ENOSPC, and took the two
+    # long-running ones down with it when their checkpoint writes failed.
+    # One checkpoint per arm. The peak is the only one worth keeping; `last` is a decaying
+    # model by construction, since every arm here peaks early and declines.
+    save_top_k: 1
+    save_last: False
+
+trainer:
+  max_steps: 800

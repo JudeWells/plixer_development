@@ -1,0 +1,12 @@
+# @package _global_
+# DPO at seed 44. DPO led GRPO in both of the first two seeds (0.1469/0.1485 against
+# 0.1439/0.1460), so it is the arm worth replicating; four seeds makes the ordering and the
+# size of the gain readable against the control's measurement noise.
+defaults:
+  - rl_dpo
+  - _self_
+
+task_name: "rl_dpo_s44"
+tags: ["${task_name}", "rl", "dpo", "v2", "11ch", "seed${seed}"]
+
+seed: 44

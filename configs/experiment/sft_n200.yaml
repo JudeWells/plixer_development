@@ -1,0 +1,33 @@
+# @package _global_
+# THE SFT COMPARATOR, measured identically to the RL arms.
+#
+# WHY THIS IS NEEDED. The RL arms are +0.0110 (DPO) and +0.0077 (GRPO) tanimoto over the
+# lr=0 control -- i.e. over doing NOTHING. That is the wrong bar. The interesting question is
+# whether RL beats ordinary supervised fine-tuning for the same compute, and the frozen-anneal
+# arms (W12-W19) are that comparator.
+#
+# ⚠️ Their 0.157 tanimoto CANNOT be compared to the RL arms' 0.148 directly, and the reason is
+# a genuine trap. `n_samples_for_validity_testing` selects the FIRST n rows of the first
+# validation batch, so n=30 scores the first 30 pockets and n=200 scores the first 200 -- a
+# different, easier pocket subset, not merely a noisier estimate of the same one. The lr=0
+# control makes this unmistakable: it scores 0.1372 at n=200 while the same underlying policy
+# family scored 0.157 at n=30. Any comparison across different n is meaningless.
+#
+# So: the frozen-anneal SFT arm, unchanged except that tanimoto is measured on the same 200
+# pockets the RL arms use.
+defaults:
+  - e2e_w12_frozen_anneal
+  - _self_
+
+task_name: "sft_n200"
+tags: ["${task_name}", "sft", "comparator", "v2", "11ch", "seed${seed}"]
+
+# Same W&B group as the RL arms so scripts/e2e_report.py and the RL comparison pick it up
+# alongside them rather than in a separate table.
+logger:
+  wandb:
+    group: "rl_tanimoto_v1"
+    tags: ["sft", "comparator", "v2", "11ch"]
+
+model:
+  n_samples_for_validity_testing: 200

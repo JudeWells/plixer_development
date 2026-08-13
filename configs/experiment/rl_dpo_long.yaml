@@ -1,0 +1,39 @@
+# @package _global_
+# DPO, extended 400 -> 1200 steps. The four 400-step arms had not converged.
+#
+# THE EVIDENCE. Best tanimoto landed at steps 349, 299, 399, 399 for seeds 42/43/44/45 --
+# three of four at or adjacent to max_steps, and none showing the decay that every SFT and
+# end-to-end arm in this project exhibits after its peak. A schedule whose optimum sits on its
+# own right-hand boundary is not measuring the method, it is measuring the budget.
+#
+# ⚠️ Note this is the OPPOSITE diagnosis to the one that fixed the AUC arms. There, every arm
+# peaked early and decayed, and the fix was to SHRINK the schedule onto the observed optimum
+# (§19d, and the W4 anneal). DPO shows no decay at all, so the same reasoning points the other
+# way. The two are the same rule -- size the schedule to where the optimum actually is -- and
+# it is worth not pattern-matching to the earlier fix.
+#
+# 50 warmup / 550 stable / 600 decay, so the anneal still lands on the run rather than being
+# truncated. If the peak again pins to the boundary, extend again rather than concluding
+# anything about the ceiling.
+defaults:
+  - rl_dpo
+  - _self_
+
+task_name: "rl_dpo_long"
+tags: ["${task_name}", "rl", "dpo", "long", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    scheduler:
+      num_warmup_steps: 50
+      num_stable_steps: 550
+      num_decay_steps: 600
+
+callbacks:
+  early_stopping:
+    # 8 checks x 50 steps = 400 steps of patience, enough to ride out a flat stretch without
+    # letting a genuinely dead run consume the full budget.
+    patience: 8
+
+trainer:
+  max_steps: 1200

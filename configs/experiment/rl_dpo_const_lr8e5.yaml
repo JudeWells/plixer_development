@@ -1,0 +1,24 @@
+# @package _global_
+# Constant-LR DPO at 8e-5 -- extending the sweep upward, because it has not turned over.
+#
+# Measured so far (best tanimoto): 2e-6 0.1496, 5e-6 0.1540/0.1565, 1e-5 0.1662, 2e-5 0.1691
+# by step 699 alone. Higher LR is winning on BOTH level and speed, and the reference 5e-6 was
+# an order of magnitude below the useful value. 2e-5 has not plateaued, so the optimum is at or
+# above it and the bracket has to be opened upward rather than refined in the middle.
+#
+# ⚠️ This is the region where the KL leash is most likely to fail. A Tanimoto reward is
+# trivially hackable -- the degenerate optimum is to ignore the pocket and emit the commonest
+# HiQBind scaffold -- and kl_beta was tuned at 5e-6. Watch train/kl, val/zinc/loss, and
+# val/poc2mol/validity together; a tanimoto rise with zinc loss climbing is reward hacking, not
+# progress. AUC is already drifting down with LR (0.759 at 5e-6, 0.754 at 2e-5), which is the
+# same trade-off appearing on the metric we can measure cheaply.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_const_lr8e5"
+tags: ["${task_name}", "rl", "dpo", "constlr", "lrsweep", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    lr: 8e-5

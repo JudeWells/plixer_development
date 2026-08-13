@@ -1,0 +1,98 @@
+# @package _global_
+# RL on the language model with a Tanimoto-to-true-ligand reward. Shared settings.
+#
+# The question: maximum likelihood on the one true ligand cannot express "nearly right" -- a
+# generation differing by a methyl scores as badly as benzene. Tanimoto can, so this optimises
+# it directly.
+#
+# ⚠️ TWO METRICS, AND THEY CAN MOVE IN OPPOSITE DIRECTIONS.
+#   val/poc2mol/tanimoto        what the reward optimises. The headline for this experiment.
+#   val/likelihood_auc_znorm    the project metric, and a RANKING metric computed from
+#                               teacher-forced likelihoods. RL that sharpens a policy usually
+#                               costs calibration, so this can fall while the reward rises.
+# Checkpoint selection is on tanimoto because that is what is being optimised, but NEVER report
+# it without the AUC beside it. Baselines to beat, both from the same warm decoder:
+#   tanimoto  ~0.150-0.170 (frozen-pipeline arms W12-W19)
+#   AUC znorm  0.7589 +- 0.0059 over 8 seeds -- the honest figure, not the 0.7657 max
+#
+# ⚠️ sigma on the AUC is 0.0059 and single runs of anything in this project have proved
+# misleading: four rounds of tuning were spent on noise before replication was done. Treat a
+# single RL arm as a pilot, and replicate across seeds before believing any difference.
+defaults:
+  - _self_
+  - override /data: vox2smiles_e2e_v2_11ch
+  - override /model: rl_vox2smiles
+  - override /trainer: ddp
+  - override /logger: wandb.yaml
+
+task_name: "rl"
+tags: ["${task_name}", "rl", "v2", "11ch", "seed${seed}"]
+
+train: True
+test: False
+optimized_metric: "val/poc2mol/tanimoto"
+ckpt_path: null
+# The starting policy: the same warm stage-3 decoder every W arm used, so the RL result is
+# read against the W12-W19 frozen distribution rather than against a different lineage. The
+# reference policy for the KL / DPO terms is a snapshot of THIS, taken in on_fit_start after
+# these weights land -- see the warning in src/models/rl_vox2smiles.py.
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+seed: 42
+
+logger:
+  wandb:
+    project: "voxelSmiles"
+    entity: "cath"
+    group: "rl_tanimoto_v1"
+    job_type: "rl"
+    tags: ["rl", "v2", "11ch"]
+    save_dir: "${paths.output_dir}"
+    offline: False
+    id: null
+
+data:
+  num_workers: 12
+  inject_protein: false
+  train_dataset:
+    # Pure pocket rows: the reward is "does this pocket's generation resemble this pocket's
+    # ligand", and a ZINC row has no pocket to condition on. val/zinc/loss remains as the
+    # forgetting tripwire, and the KL leash is what actually protects the ZINC ability.
+    prob_poc2mol: 1.0
+  config:
+    # Small, because the rollout dominates: every step generates batch_size x group_size = 64
+    # sequences autoregressively, which costs far more than the two teacher-forced passes.
+    batch_size: 8
+    # Set equal to batch_size x devices so src/train.py computes accumulate_grad_batches = 1.
+    # Left at the SFT default of 256 it would accumulate 16 rollouts per optimiser step and
+    # make each step ~16x slower for no benefit -- the effective batch is already 16 pockets
+    # x 8 samples = 128 sequences.
+    target_samples_per_batch: 16
+
+model:
+  override_optimizer_on_load: true
+
+callbacks:
+  early_stopping:
+    _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/poc2mol/tanimoto"
+    mode: "max"
+    patience: 8
+    min_delta: 0.0
+    check_on_train_epoch_end: False
+    verbose: True
+  model_checkpoint:
+    monitor: "val/poc2mol/tanimoto"
+    mode: "max"
+    save_top_k: 1
+    save_last: False
+    filename: "step_{step:07d}_tan_{val/poc2mol/tanimoto:.4f}"
+    auto_insert_metric_name: False
+
+trainer:
+  devices: 2
+  # In BATCHES. accumulate_grad_batches is 1 here, so this is also 50 optimiser steps --
+  # roughly 8 validations over the run. ⚠️ That equivalence is a coincidence of this config;
+  # everywhere else in the project it is divided by accumulate_grad_batches.
+  val_check_interval: 50
+  max_steps: 400
+  max_epochs: 50

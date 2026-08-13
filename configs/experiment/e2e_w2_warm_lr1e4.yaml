@@ -1,0 +1,32 @@
+# @package _global_
+# ARM W2 -- THE HUB OF THE WARM LADDER. Arm B's exact settings, warm-started decoder.
+#
+# voxel_loss_weight 1.0, poc2mol_lr 1e-4, LM gradient on: byte-for-byte the configuration of
+# e2e_b_balanced, which is the best-performing arm of the cold sweep. The ONLY difference is
+# where the decoder starts -- stage 3 here, stage 1 there.
+#
+# So this arm carries two readings at once:
+#   W2 - W0  the end-to-end gradient's value on top of a competent decoder
+#   W2 - B   whether warm-starting the decoder is worth anything at all
+# The second is confounded by ancestry (see the note in e2e_w0_warm_frozen.yaml: the warm
+# checkpoint descends from the short stage 1, which §22d puts 0.010 AUC behind the long one).
+# The confound runs against W2, so a W2 win over B is real and a narrow W2 loss is not
+# conclusive.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_w2_warm_lr1e4"
+tags: ["${task_name}", "e2e", "arm_w2", "warm", "v2", "11ch", "seed${seed}"]
+
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+
+logger:
+  wandb:
+    group: "e2e_warm_v1"
+    tags: ["e2e", "warm", "v2", "11ch"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-4
+  lm_grad_to_poc2mol: true

@@ -1,0 +1,16 @@
+# @package _global_
+# Extended SFT comparator (see sft_n200_long.yaml) at seed 43.
+#
+# ⚠️ WHY THIS EXISTS. The first version of the RL comparison ran 4 DPO seeds against 2 SFT
+# seeds and reported a significant win; the SFT variance was underestimated 2.5x and the
+# result evaporated at 4 seeds. The extended comparison was about to repeat it exactly --
+# 4 extended-DPO seeds against 1 extended-SFT seed. The comparator gets the same seed count
+# as the treatment, and it gets it BEFORE the difference is reported, not after.
+defaults:
+  - sft_n200_long
+  - _self_
+
+task_name: "sft_n200_long_s43"
+tags: ["${task_name}", "sft", "comparator", "long", "v2", "11ch", "seed${seed}"]
+
+seed: 43

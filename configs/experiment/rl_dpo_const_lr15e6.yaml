@@ -1,0 +1,16 @@
+# @package _global_
+# Constant-LR DPO at 1.5e-5 -- interpolating into the promising region.
+#
+# The sweep is monotonic so far: 2e-6 -> 0.1463, 5e-6 -> 0.154, 1e-5 -> 0.1662. The optimum is
+# at or above 1e-5, and 2e-5 (running) brackets it from above. This fills the gap between them,
+# which is where the turnover most likely sits.
+defaults:
+  - rl_dpo_const
+  - _self_
+
+task_name: "rl_dpo_const_lr15e6"
+tags: ["${task_name}", "rl", "dpo", "constlr", "lrsweep", "v2", "11ch", "seed${seed}"]
+
+model:
+  config:
+    lr: 1.5e-5

@@ -1,0 +1,33 @@
+# @package _global_
+# ARM W1 -- warm decoder, end-to-end gradient, GENTLE upstream learning rate.
+#
+# W0 plus the LM gradient reaching Poc2Mol, at poc2mol_lr 1e-5 -- the default in
+# configs/model/end_to_end.yaml, and an order of magnitude below the 1e-4 every arm in the
+# Z/D/B/C sweep uses. That sweep holds the upstream rate fixed, so this knob is untested
+# anywhere: Poc2Mol arrives 576 epochs deep and converged, and the gradient now reaching it
+# is of a kind it has never seen, which is exactly the setting where the rate it was
+# ORIGINALLY trained at is too hot. W1 against W2 isolates it, everything else held.
+#
+# voxel_loss_weight 1.0 keeps Poc2Mol's own BCE+Dice objective at full strength, so the LM
+# loss is a pure addition. Watch val/poc2mol/dice against 0.5027 regardless -- the smoke
+# test on the other node measured the LM gradient into Poc2Mol already OUTWEIGHING the
+# reconstruction gradient at this anchor weight (norm 16.6 against 9.5), so "anchored" here
+# means restrained, not dominated.
+defaults:
+  - e2e_base
+  - _self_
+
+task_name: "e2e_w1_warm_lr1e5"
+tags: ["${task_name}", "e2e", "arm_w1", "warm", "v2", "11ch", "seed${seed}"]
+
+init_weights_from: checkpoints/s3_v2_11ch/step_0003000_auc_0.7576.ckpt
+
+logger:
+  wandb:
+    group: "e2e_warm_v1"
+    tags: ["e2e", "warm", "v2", "11ch"]
+
+model:
+  voxel_loss_weight: 1.0
+  poc2mol_lr: 1e-5
+  lm_grad_to_poc2mol: true

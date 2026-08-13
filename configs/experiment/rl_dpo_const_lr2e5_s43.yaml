@@ -1,0 +1,10 @@
+# @package _global_
+# Constant-LR DPO at 2e-5, seed 43 -- replication of the current best setting.
+defaults:
+  - rl_dpo_const_lr2e5
+  - _self_
+
+task_name: "rl_dpo_const_lr2e5_s43"
+tags: ["${task_name}", "rl", "dpo", "constlr", "v2", "11ch", "seed${seed}"]
+
+seed: 43

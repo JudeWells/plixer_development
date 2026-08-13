@@ -1,0 +1,30 @@
+# @package _global_
+# ARM W12 -- THE MATCHED FROZEN CONTROL. W4's exact configuration with the upstream frozen.
+#
+# WHY THIS EXISTS. The four W4 replicates (seeds 42/43/44/45) scored 0.7718, 0.7330, 0.7471,
+# 0.7779: mean 0.7574, stdev 0.0210, range 0.0449. The frozen baseline W0 scored 0.7575 --
+# from a SINGLE seed. The difference of means is -0.0000, so on the evidence so far the
+# end-to-end gradient buys nothing, and the 0.7759/0.7779 headline figures are the upper tail
+# of a distribution centred exactly on the frozen baseline.
+#
+# But W0 is one draw from a distribution whose spread we now know is ~0.021, and it also ran
+# the OLD schedule (200/1800/2000, max_steps 4000) rather than W4's anneal. Comparing a
+# 4-seed mean against a single point from a different schedule is not a comparison. This arm
+# is W4 with `voxel_loss_weight: 0`, `poc2mol_lr: 0` and `lm_grad_to_poc2mol: false` -- the
+# ONLY differences from W4 are the three switches that sever the upstream -- replicated at
+# the same four seeds. Then the two distributions are comparable.
+#
+# Note the cold ladder already pointed here: arm Z (frozen) 0.7660 against arm B (end-to-end)
+# 0.7658. Two independent ladders agreeing on no effect is a much stronger statement than
+# either alone, and it is the statement to make if these replicates land where W4's did.
+defaults:
+  - e2e_w4_anneal
+  - _self_
+
+task_name: "e2e_w12_frozen_anneal"
+tags: ["${task_name}", "e2e", "arm_w12", "warm", "anneal", "control", "v2", "11ch", "seed${seed}"]
+
+model:
+  voxel_loss_weight: 0.0
+  poc2mol_lr: 0.0
+  lm_grad_to_poc2mol: false
