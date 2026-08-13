@@ -1,0 +1,28 @@
+# @package _global_
+# DPO on a DIFFERENT frozen upstream: e2e_b_r3_poc2mol_step1000, from the packaged bundle.
+#
+# WHY. The composition readout is computed from the predicted ligand DENSITY, so it is a
+# property of the Poc2Mol upstream, not the decoder. DPO freezes the upstream, which means
+# every DPO member so far shares one density and their composition matrices are near
+# duplicates -- measured: the 3-member DPO ensemble's composition axis reaches 0.7401, versus
+# 0.7582 for a 4-member set spanning two density families, and essentially level with the
+# bundle's 0.7408. Ensembling an axis with no diversity on it buys nothing.
+#
+# So the two gains live on different axes: DPO improves the DECODER, upstream diversity
+# improves the COMPOSITION readout, and fusion needs both. This arm supplies both at once --
+# a DPO-trained decoder reading a density that differs from the original. The bundle's §5
+# found its end-to-end-drifted upstreams were the stronger ensemble members, and those are
+# exactly these two files.
+#
+# lr 1e-5: mid-range of the constant-LR sweep, where smoothed AUC is flat (0.7610-0.7654)
+# and tanimoto is already well above SFT -- a reasonable joint operating point when the
+# member is wanted for BOTH metrics.
+defaults:
+  - rl_dpo_auc_1e5_s42
+  - _self_
+
+task_name: "rl_dpo_auc_upstep1000"
+tags: ["${task_name}", "rl", "dpo", "auc_member", "upstream_step1000", "v2", "11ch", "seed${seed}"]
+
+model:
+  poc2mol_ckpt_path: checkpoints/upstreams/e2e_b_r3_poc2mol_step1000.ckpt

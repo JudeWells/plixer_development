@@ -44,4 +44,11 @@
 # launched 08:43:17 rl_dpo_auc_upstep1000
 # --- then the KL/diversity frontier ---
 # launched 08:59:39 rl_dpo_lr2e5_kb02
-rl_dpo_lr2e5_kb04
+# launched 09:45:06 rl_dpo_lr2e5_kb04
+# --- Seed replication of the headline ensemble: disjoint seeds 46/47, AUC-checkpointed. ---
+# The training-seed component of the ensemble uncertainty is currently unmeasured; the paired
+# bootstrap covers panel sampling only.
+aucrep_frozen_s46
+aucrep_dpo_s46
+aucrep_frozen_s47
+aucrep_dpo_s47

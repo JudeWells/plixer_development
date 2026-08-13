@@ -1,0 +1,11 @@
+# @package _global_
+# Independent-seed rebuild of a DPO ensemble member, seed 46. Pairs with aucrep_frozen_s46
+# so a rebuilt ensemble spans the same regimes as A (frozen + DPO) at disjoint seeds.
+defaults:
+  - rl_dpo_auc_1e5_s42
+  - _self_
+
+task_name: "aucrep_dpo_s46"
+tags: ["${task_name}", "ensemble_replicate", "v2", "11ch", "seed${seed}"]
+
+seed: 46
