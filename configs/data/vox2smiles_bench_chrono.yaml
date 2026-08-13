@@ -1,0 +1,133 @@
+# BENCHMARK data config: the FULL 943-system chronological test split, with a 943-candidate
+# panel (each system's true ligand, taken from the parquet).
+#
+# Identical to vox2smiles_e2e_v2_11ch.yaml except that `roc_auc_plinder` now holds the whole
+# chronological test set rather than the 104-system PLINDER subset. The key name is kept so
+# the fusion/benchmark scripts, which look up val_datasets['roc_auc_plinder'], work unchanged.
+#
+# PLINDER (107) and seq-sim (141) are both SUBSETS of these 943, so they are extracted by
+# slicing ROWS of the resulting matrix rather than by re-scoring. That keeps the candidate
+# panel identical across all three reports -- a subset scored against its own smaller panel
+# would be an easier task and the numbers would not be comparable.
+#
+# ⚠️ 943 candidates per pocket is ~9x the PLINDER panel. `fusion_ensemble.py` scores the whole
+# panel in ONE forward pass, which OOMs at this size; use benchmark_test_set.py, which chunks
+# and is verified to reproduce fusion_ensemble.py's number on the 104-panel.
+#
+# Deliberately a near-copy of vox2smiles_combined_v2_11ch.yaml: the datasets, the channel
+# map, the decoy panel and the validation splits are all held identical so that
+# val/likelihood_auc_znorm is directly comparable to the 0.7522 stage-3 baseline. The ONE
+# difference is that no Poc2Mol is attached here -- `end_to_end: true` selects a builder
+# that voxelises and hands the protein and true-ligand grids over separately, leaving the
+# upstream forward pass to the LightningModule where the graph is live.
+_target_: src.data.vox2smiles.data_module.Vox2SmilesDataModule
+defaults:
+  - datasets@train_dataset.poc2mol_output_dataset.complex_dataset: complex_dataset_v2_11ch
+  - datasets@val_datasets.roc_auc_plinder.complex_dataset: complex_dataset_v2_11ch
+  - datasets@val_datasets.hiqbind_val.complex_dataset: complex_dataset_v2_11ch
+  - datasets@val_datasets.roc_auc_plinder.decoy_smiles_list: testset_chrono_smiles
+  - datasets@val_datasets.roc_auc_plinder.complex_dataset.config.system_ids: testset_chrono_system_ids
+  - _self_
+
+data_path: "../geom/rdkit_folder/drugs"
+num_workers: 14
+
+end_to_end: true
+# Not set, and it must not be: with end_to_end the datamodule refuses to own a Poc2Mol.
+poc2mol_model: null
+poc2mol_ckpt_path: null
+n_protein_channels: 4
+# The filter blanks a rejected row's labels, so that row contributes no LM loss and
+# therefore NO GRADIENT to Poc2Mol -- exactly the samples the upstream most needs to learn
+# from. Off, and it should stay off here.
+quality_filter: none
+max_poc2mol_loss: null
+
+config:
+  _target_: src.data.common.voxelization.config.Vox2SmilesDataConfig
+  # Smaller than stage 3's 64: backprop now spans a 117M-parameter 3D U-Net as well as the
+  # 172M decoder. target_samples_per_batch keeps the effective batch matched regardless.
+  batch_size: 32
+  val_batch_size: 200
+  secondary_val_batch_size: 50
+  target_samples_per_batch: 256
+  max_smiles_len: 200
+  has_protein: true
+  include_hydrogens: false
+  # max only: the Poc2Mol we initialise from was trained on max-aggregated grids (§10b).
+  voxel_aggregation: max
+  voxel_radius_scale: 1.0
+  ligand_channels:
+    0: [ "C_aliphatic" ]
+    1: [ "C_aromatic" ]
+    2: [ "N_withH" ]
+    3: [ "N_noH" ]
+    4: [ "O_withH" ]
+    5: [ "O_noH" ]
+    6: [ "S" ]
+    7: [ "Cl", "Br", "I" ]
+    8: [ "F" ]
+    9: [ "HBA" ]
+    10: [ "C", "H", "O", "N", "S", "Cl", "F", "I", "Br" ]
+  ligand_channel_names: [ "carbon_aliphatic", "carbon_aromatic", "nitrogen_with_h",
+                          "nitrogen_no_h", "oxygen_with_h", "oxygen_no_h", "sulfur",
+                          "halogen", "fluorine", "hbond_acceptor", "other" ]
+
+train_dataset:
+  _target_: src.data.vox2smiles.datasets.CombinedDataset
+  # Half the mixture is ZINC, and those rows carry no pocket, so only the other half trains
+  # Poc2Mol. The effective batch for the UPSTREAM is half what it looks like -- worth
+  # remembering when reading train/e2e_voxel_loss against Poc2Mol's own curves.
+  prob_poc2mol: 0.5
+  max_poc2mol_loss: ${data.max_poc2mol_loss}
+  vox2smiles_dataset:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_train.csv
+    random_rotation: true
+    random_translation: 6.0
+    config: ${data.config}
+  poc2mol_output_dataset:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    decoy_smiles_list: null
+    include_decoys: false
+
+val_datasets:
+  # ⚠️ rotate/translation are set explicitly here, and this is a DEPARTURE from
+  # vox2smiles_combined_v2_11ch.yaml. That config overrides only `use_cluster_member_zero`
+  # and `data_path` on its val datasets, so they inherit `rotate: true, translation: 6.0`
+  # from complex_dataset_v2_11ch.yaml -- i.e. every stage-3 validation was STOCHASTIC,
+  # against CLAUDE.md §6's requirement that validation be deterministic for model selection.
+  # Measured cost: the same checkpoint scores pooled Dice 0.311 augmented against 0.503
+  # deterministic. It also means "best val AUC" from those runs carries the ~+0.025
+  # maximum-selection inflation §6 warns about.
+  #
+  # Consequence for this experiment: our numbers are NOT directly comparable to the 0.7522
+  # figure, which came from a stochastic-val run. That is why e2e_z_frozen re-measures the
+  # frozen-upstream baseline in this regime -- compare arms to THAT, not to 0.7522.
+  roc_auc_plinder:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    include_decoys: True
+    complex_dataset:
+      use_cluster_member_zero: true
+      rotate: false
+      translation: 0.0
+      data_path: '../hiqbind/parquet_v2/test'
+  hiqbind_val:
+    _target_: src.data.vox2smiles.datasets.Poc2MolOutputDataset
+    decoy_smiles_list: null
+    include_decoys: false
+    complex_dataset:
+      use_cluster_member_zero: true
+      rotate: false
+      translation: 0.0
+      data_path: ../hiqbind/parquet_v2/val
+  # Ligand-only control: detects the decoder trading away its ZINC ability. Doubly useful
+  # here, since these rows are the half of the mixture that supplies no Poc2Mol gradient.
+  zinc_val:
+    _target_: src.data.vox2smiles.datasets.ParquetVox2SmilesDataset
+    data_path: ../zinc20_parquet_v2
+    index_file: index_val.csv
+    random_rotation: false
+    random_translation: 0.0
+    config: ${data.config}

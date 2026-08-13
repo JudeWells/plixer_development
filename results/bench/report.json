@@ -1,0 +1,184 @@
+{
+  "A1_e2e_warm": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8322916432889287,
+      "composition": 0.715645185591842,
+      "fused_best": 0.8389757630013752,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.8382564022139054
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7822324642445254,
+      "composition": 0.6511877045883739,
+      "fused_best": 0.7881259990152156,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.7865487772042163
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.777649290875353,
+      "composition": 0.6723177741047117,
+      "fused_best": 0.7816035895107258,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.7801660547796977
+    }
+  },
+  "A2_e2e_anneal": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8319196440479527,
+      "composition": 0.7188623900650357,
+      "fused_best": 0.8383801315558338,
+      "best_w": 0.3,
+      "fused_at_0.3": 0.8383801315558338
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7753090936181385,
+      "composition": 0.6433325716868635,
+      "fused_best": 0.7758843349163644,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7740276424108624
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7749318396944952,
+      "composition": 0.667982799316996,
+      "fused_best": 0.7755496073456584,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7740212220774214
+    }
+  },
+  "A3_frozen": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8418588362320379,
+      "composition": 0.7271320902325741,
+      "fused_best": 0.8478489184096951,
+      "best_w": 0.3,
+      "fused_at_0.3": 0.8478489184096951
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7906919484373776,
+      "composition": 0.6319703646563817,
+      "fused_best": 0.7922098221312996,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7850364176451726
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7898595150659955,
+      "composition": 0.661844615385871,
+      "fused_best": 0.7908536463693205,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7857193228699437
+    }
+  },
+  "A4_sft": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8364151676310974,
+      "composition": 0.7271320902325741,
+      "fused_best": 0.8441308820461065,
+      "best_w": 0.3,
+      "fused_at_0.3": 0.8441308820461065
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7777065192699404,
+      "composition": 0.6319703646563817,
+      "fused_best": 0.781169016415611,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7765647454218818
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7799757367058461,
+      "composition": 0.661844615385871,
+      "fused_best": 0.784395497327362,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.7819332917509104
+    }
+  },
+  "DPO_auc": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8399603927572858,
+      "composition": 0.7271320902325741,
+      "fused_best": 0.8452842555525955,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.8452740188157749
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7872479231163857,
+      "composition": 0.6319703646563817,
+      "fused_best": 0.7884781761611951,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7812948820794349
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7900703075145469,
+      "composition": 0.661844615385871,
+      "fused_best": 0.791463453097144,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7856586358312183
+    }
+  },
+  "DPO_tan": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8323169034420322,
+      "composition": 0.7271320902325741,
+      "fused_best": 0.8374822682774442,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.8372008148554078
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7621250817921221,
+      "composition": 0.6319703646563817,
+      "fused_best": 0.763166979158911,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7575816138879613
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7652083039199219,
+      "composition": 0.661844615385871,
+      "fused_best": 0.7665186639007138,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.763086009767757
+    }
+  },
+  "ENSEMBLE(4)": {
+    "chronological": {
+      "n_pockets": 943,
+      "decoder": 0.8514712704368314,
+      "composition": 0.7306943302985012,
+      "fused_best": 0.8567510762418533,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.856510018945206
+    },
+    "PLINDER": {
+      "n_pockets": 107,
+      "decoder": 0.7997286771514515,
+      "composition": 0.6451345867478533,
+      "fused_best": 0.8010283998611072,
+      "best_w": 0.1,
+      "fused_at_0.3": 0.7957891704373125
+    },
+    "seq-sim": {
+      "n_pockets": 141,
+      "decoder": 0.7964537198882475,
+      "composition": 0.6724597585726382,
+      "fused_best": 0.7976213593157389,
+      "best_w": 0.2,
+      "fused_at_0.3": 0.7940826448814841
+    }
+  }
+}

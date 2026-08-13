@@ -1,0 +1,15 @@
+# @package _global_
+# Benchmark on the full 943-system chronological test split.
+#
+# Model config is irrelevant to scoring -- benchmark_test_set.py loads each checkpoint's
+# state_dict into an instantiated module, so only the ARCHITECTURE matters and all our
+# checkpoints (EndToEndPoc2Smiles and RLVox2Smiles alike) share it. rl_dpo_const is used
+# simply because it resolves the 11-channel architecture with the frozen upstream.
+defaults:
+  - rl_dpo_const
+  - override /data: vox2smiles_bench_chrono
+  - _self_
+
+task_name: "bench_chrono"
+train: False
+test: False
