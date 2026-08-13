@@ -70,6 +70,43 @@ the LightningModule builds. It was severed three further times: `torch.no_grad()
 `EndToEndPoc2Smiles` (a `VoxToSmilesModel` subclass, so `val/likelihood_auc_znorm` is computed by
 literally the same code) owns Poc2Mol and runs it inside `training_step`.
 
+### Fusion ensembles — 0.8080 against the packaged bundle's 0.7883
+
+Scored by `scripts/adhoc_analysis/fusion_ensemble.py`, copied **verbatim** from
+`../plixer_ensemble_20260812/code/` so the number comes from that bundle's protocol rather than a
+reimplementation. Same 104×105 PLINDER panel; alignment (panel, positive mask, valid columns)
+verified identical across all three matrix sets before combining.
+
+| set | ckpts | decoder | composition | fused | @w | corr(dec,comp) |
+|---|---|---|---|---|---|---|
+| bundle (e2e/frozen) | 6 | 0.7818 | 0.7408 | 0.7883 | 0.2 | 0.547 |
+| **A — AUC-selected** | 4 | 0.7733 | **0.7582** | **0.8057** | 0.5 | **0.399** |
+| B — DPO, tanimoto-selected | 6 | 0.7541 | 0.7445 | 0.7871 | 0.5 | 0.469 |
+| **bundle + A** | 10 | 0.7978 | 0.7476 | **0.8080** | 0.3 | |
+| all three | 16 | 0.7898 | 0.7475 | 0.8050 | 0.3 | |
+
+**bundle+A wins at EVERY weight 0.1–0.6, including 0.8076 at the bundle's own pre-committed
+w = 0.2**, so the gain is not the blend weight moving to suit our readouts. Paired bootstrap over
+pockets (400 resamples): **+0.0199 vs the bundle, 95% CI [+0.0068, +0.0333], excludes zero**.
+
+**The gain is member quality, not member count.** A alone (4 checkpoints) scores 0.8057; adding
+the bundle's six gives +0.0022 with a CI spanning zero. And all-16 (0.8050) is *worse* than
+bundle+A — B's AUC-weak members dilute. A's edge is a stronger composition readout (0.7582 vs
+0.7408) that is markedly less correlated with the decoder (0.399 vs 0.547), which is what lets
+fusion contribute +0.032 instead of +0.0065. Two of A's four members carry end-to-end-drifted
+Poc2Mol upstreams, which is the density-diversity axis the bundle's §5 identified.
+
+⚠️ **B is the informative negative-ish result:** six DPO checkpoints selected on *tanimoto* —
+i.e. ~0.018 per member below their own AUC peak — still fuse to 0.7871, level with the bundle.
+The DPO family carries real diversity; those members were simply picked at the wrong step.
+`rl_dpo_auc_*` rebuilds them at the AUC peak.
+
+⚠️ The bootstrap covers **panel-sampling noise only**, not training-seed variance, so it is a
+lower bound on the uncertainty. No ensemble here has been rebuilt from independent seeds.
+
+Reproduce: `scripts/adhoc_analysis/combine_fusion_members.py --sets name=path.npz ...` — pools
+saved member matrices in numpy, no GPU. Matrices in `results/e2e/fusion_{aucsel4,dpotan6}.npz`.
+
 ### ⚠️ Provenance of checkpoints written before 2026-08-13 06:35
 
 Every checkpoint carries an embedded provenance record, but runs before the commits below stamp
