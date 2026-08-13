@@ -48,7 +48,7 @@
 # --- Seed replication of the headline ensemble: disjoint seeds 46/47, AUC-checkpointed. ---
 # The training-seed component of the ensemble uncertainty is currently unmeasured; the paired
 # bootstrap covers panel sampling only.
-aucrep_frozen_s46
-aucrep_dpo_s46
-aucrep_frozen_s47
+# launched 09:46:27 aucrep_frozen_s46
+# launched 10:07:50 aucrep_dpo_s46
+# launched 10:34:13 aucrep_frozen_s47
 aucrep_dpo_s47
