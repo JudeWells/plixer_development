@@ -70,6 +70,25 @@ the LightningModule builds. It was severed three further times: `torch.no_grad()
 `EndToEndPoc2Smiles` (a `VoxToSmilesModel` subclass, so `val/likelihood_auc_znorm` is computed by
 literally the same code) owns Poc2Mol and runs it inside `training_step`.
 
+### ⚠️ Provenance of checkpoints written before 2026-08-13 06:35
+
+Every checkpoint carries an embedded provenance record, but runs before the commits below stamp
+`2f10f95-dirty` with 81 untracked `.py`/`.yaml` files — including `src/models/rl_vox2smiles.py`
+— captured in neither the commit nor `uncommitted.patch` (which only records tracked-but-modified
+files). Those runs are **not** reconstructable from their stamped commit alone. The equivalent
+source is now committed:
+
+| commit | contents |
+|---|---|
+| `4ebc809` | `end_to_end.py`, `rl_vox2smiles.py`, the datamodule hook, the diversity metrics |
+| `a891763` | every experiment / model / data config |
+| `f0e4cad` | analysis tooling, launchers, results, this record |
+
+Training-code mtimes are all ≤ 05:50 on 2026-08-13 while the `rl_dpo_auc_*` members started
+06:32, so **those members ran byte-identical source to `4ebc809`+`a891763`** despite their record
+saying dirty. For anything earlier, the resolved config in the run dir is authoritative (as in the
+`plixer_ensemble_20260812` bundle's §4), and `uncommitted.patch` covers the three tracked files.
+
 **Best end-to-end checkpoints so far** (nebius1; each carries BOTH models, hence 2.4 GB):
 
 | path | AUC | Dice | note |
