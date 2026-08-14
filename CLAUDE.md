@@ -138,6 +138,64 @@ lower bound on the uncertainty. No ensemble here has been rebuilt from independe
 Reproduce: `scripts/adhoc_analysis/combine_fusion_members.py --sets name=path.npz ...` — pools
 saved member matrices in numpy, no GPU. Matrices in `results/e2e/fusion_{aucsel4,dpotan6}.npz`.
 
+### External comparators — Plixer does NOT clearly win (2026-08-14)
+
+Boltz-2, AutoDock Vina and Gnina all run to completion on the 107-system PLINDER subset, each
+pocket ranking the same 107-candidate panel. Common 103-pocket panel, 10,815 cells, every cell
+scored by every method. Reproduce: `scripts/adhoc_analysis/comparator_report.py --matrices
+results/bench/comparators4_plinder107.npz` (no GPU). Full account in report.md §23.
+
+| method | raw | **znorm** | vs Plixer |
+|---|---|---|---|
+| **Gnina CNNscore** | 0.7674 | **0.7885** | −0.0011 [−0.063, +0.061] — **tie** |
+| **Plixer ensemble (6)** | 0.7829 | **0.7874** | — |
+| Gnina CNNaffinity | 0.5850 | 0.7365 | +0.0509 [−0.011, +0.114] |
+| Boltz-2 binder prob | 0.7042 | 0.7250 | +0.0624 [−0.004, +0.133] |
+| Gnina affinity | 0.7134 | 0.7182 | +0.0692 [+0.002, +0.138] |
+| AutoDock Vina | 0.6412 | 0.6314 | **+0.1560 [+0.086, +0.226]** |
+
+🚨 **The only comparator Plixer beats with an interval clear of zero is Vina.** Gnina's CNNscore
+ties it. Do not claim a win over Boltz-2: that margin was +0.0696 CI [+0.0010, +0.1366] on a
+105-pocket panel and became +0.0624 CI [−0.0041, +0.1327] when adding Gnina dropped 2 pockets.
+Significance that turns on two pockets was never significance. The 20-pocket pilot's +0.183 is
+also superseded — small-sample optimism.
+
+🚨 **I predicted CNNscore would rank WORST and it ranked BEST.** The reasoning was that pose
+quality answers "is this pose right", not "does it bind". Wrong: **pose plausibility is itself a
+strong pocket-matching signal**, and it beats CNNaffinity (0.7365), which Gnina's own docs
+recommend for ranking. For which-ligand-goes-with-which-pocket, prefer CNNscore.
+
+🔑 **Raw-vs-znorm gap diagnoses a size readout.** Boltz-2's regression head (0.574 raw) and Gnina
+CNNaffinity (0.585 raw, r = +0.69 with heavy-atom count) are largely molecular-size proxies and
+gain hugely from z-normalisation. CNNscore barely moves (0.767 → 0.789) — genuinely
+pocket-specific, which is why it ranks best.
+
+🔑 **Four-way fusion reaches 0.8641** (+0.0767, 95% CI [+0.0339, +0.1186], 70/103 pockets) —
+the best number in the project. Subset AND weights chosen by **nested** leave-one-pocket-out over
+1,565 candidates; selecting on the whole panel gives 0.8711, so the nesting is worth +0.007 and is
+not academic. Winning subset: Plixer + Boltz-2 + Gnina CNNscore + Gnina affinity at
+(0.3, 0.2, 0.3, 0.2). ⚠️ Vina drops out once Gnina exists (r = +0.446 with Gnina's empirical
+score) — fusion membership is unstable, do not over-read it.
+
+Panel *size* does not drive the gain (flat +0.037–0.042 from 10 to 105 decoys/pocket), so the
+package's §3 943-panel shrinkage was specific to the composition readout. Decoy *diversity* is
+untested and would need ~889k dockings.
+
+⚠️ **Gnina at defaults is not Vina's scoring function** — `--scoring` lists `default` and `vina`
+separately. On 2,378 identical pairs: Spearman 0.75, Gnina ~1 kcal/mol weaker, Vina places a
+ligand Gnina cannot on 6.8% of pairs vs 0.1% reverse. Tool-vs-tool at defaults, not a controlled
+scoring-function experiment.
+
+⚠️ **103 pockets resolves ~±0.06.** Only the Vina gap and the fusion gain survive that.
+
+⚠️ **Never impute missing comparator cells.** An early collect filled the row minimum and read
+**AUC 0.947 at 21% completion** — Boltz scores every true ligand before any decoy, so partial
+completion imputes only negatives, to the floor.
+
+**Gnina install:** the "static" release needs cuDNN 9 + CUDA 12 runtime, in `../tools/cudnn9`,
+kept **off** venvPlixer's path (torch 2.3.1 needs cuDNN 8). It is **CPU-bound** — 32 workers over
+8 H100s ran at 1–9% GPU and load 114/128; ~95 min for 11,433 pairs.
+
 ### ⚠️ Provenance of checkpoints written before 2026-08-13 06:35
 
 Every checkpoint carries an embedded provenance record, but runs before the commits below stamp
