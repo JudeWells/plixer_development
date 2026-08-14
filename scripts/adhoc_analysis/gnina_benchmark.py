@@ -1,17 +1,26 @@
 """Cross-dock the PLINDER panel with Gnina and score the ranking.
 
-Gnina is Vina's docking engine plus a CNN rescorer, so running it on the **same receptors, the
-same ligand conformers and the same boxes as `vina_benchmark.py`** isolates the scoring function
-as the only difference between the two. This script therefore reuses `../vina_bench/plinder`
-rather than preparing its own inputs -- do not regenerate them, or the comparison stops being
-controlled.
+Gnina runs with DEFAULTS here, which is what a user comparing tools would do. It reuses the
+**same receptors, ligand conformers and boxes as `vina_benchmark.py`** -- do not regenerate them.
+
+⚠️ **This is NOT "same sampling, different scoring function".** `gnina --help` lists `default`
+and `vina` as *separate* choices for `--scoring`, so out of the box Gnina optimises its own
+empirical function, not Vina's. That function also guides the search, so sampling differs too.
+Measured against the real Vina on 2378 identical pairs: Spearman 0.75 where both find a pose
+(not ~0.95), Gnina ~1 kcal/mol weaker on average, and an asymmetric pose-finding failure rate --
+Vina finds a non-clashing pose where Gnina does not on 6.8% of pairs, against 0.1% the other
+way. Read any Gnina-vs-Vina difference as "the two tools as normally run", NOT as an isolated
+scoring-function experiment. `--scoring vina` would be the controlled version and was not run.
 
 THREE SCORES ARE RECORDED, because they are not interchangeable:
-  affinity      Vina-like empirical score, kcal/mol, LOWER is better  -> negated on collect
+  affinity      Gnina's own default empirical score, kcal/mol, LOWER is better -> negated on
+                collect. NOT the Vina function; see above.
   CNNscore      CNN pose quality, 0-1, higher better. Says "is this pose right", not "does it
-                bind", so it is the weakest ranker of the three for virtual screening.
-  CNNaffinity   CNN predicted pK, higher better. This is what Gnina's documentation recommends
-                for ranking, and it is the primary readout here.
+                bind", so it is expected to rank worse for virtual screening.
+  CNNaffinity   CNN predicted pK, higher better. What Gnina's documentation recommends for
+                ranking, and the primary readout here. ⚠️ It is strongly ligand-intrinsic
+                (r = +0.69 with heavy-atom count), so its raw and column-z-normalised AUCs
+                differ a lot and the z-normalised one is the meaningful comparison.
 
 ⚠️ Gnina prints "initial pose not within box" for most cross-docked pairs. That is expected and
 harmless: the input conformer is embedded at the origin-ish and the sampler randomises into the

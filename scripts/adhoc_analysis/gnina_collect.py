@@ -3,13 +3,18 @@
 Gnina reports three numbers per pair and they rank differently, so all three are scored rather
 than one being picked silently:
 
-  cnn_affinity   predicted pK, higher better -- Gnina's recommended screening readout
+  cnn_affinity   predicted pK, higher better -- Gnina's recommended screening readout. Strongly
+                 ligand-intrinsic (r = +0.69 with heavy-atom count), so compare on the
+                 z-normalised column, not the raw one.
   cnn_score      CNN pose quality 0-1, higher better -- answers "is the pose right", NOT
                  "does it bind", so it is expected to rank worse
-  affinity       Vina-like empirical score in kcal/mol, LOWER better, so it is negated here
+  affinity       Gnina's OWN default empirical score in kcal/mol, LOWER better, negated here
 
-⚠️ Gnina docks the SAME receptors, ligand conformers and boxes as `vina_benchmark.py`, so the
-Gnina-vs-Vina difference is the scoring function alone. Do not regenerate the inputs.
+⚠️ Gnina docks the same receptors, ligand conformers and boxes as `vina_benchmark.py`, but it is
+run with defaults and `--scoring default` is NOT `--scoring vina`. The Gnina-vs-Vina difference
+is therefore "the two tools as normally run", not an isolated scoring-function experiment: they
+agree at Spearman 0.75 on shared poses and Gnina fails to place a ligand that Vina places on
+6.8% of pairs (0.1% the reverse). Do not regenerate the inputs.
 
 Cells missing from ANY method are dropped from ALL of them, and nothing is ever imputed -- see
 `comparator_report.py` for the 0.947 artifact that rule exists to prevent.
@@ -106,11 +111,12 @@ def main():
         print(f"  vs {name:22s} {delta.mean():+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
               f"P(>0)={p:.3f}  wins {(delta > 0).sum()}/{len(keep)}")
 
-    # Gnina vs Vina isolates the scoring function: identical receptors, conformers and boxes.
+    # Same inputs, but Gnina at defaults optimises its own empirical function, so this is a
+    # tool-vs-tool comparison, NOT an isolated scoring-function experiment. See the docstring.
     delta = auc["Gnina CNNaffinity"] - auc["AutoDock Vina"]
     _, lo, hi, p = bootstrap(delta, args.resamples)
     print(f"\n  Gnina CNNaffinity - Vina = {delta.mean():+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]  "
-          f"P(>0)={p:.3f}     (same inputs; scoring function is the only difference)")
+          f"P(>0)={p:.3f}     (same inputs, but both tools at their own defaults)")
 
     print("\nper-pocket AUC correlation with Plixer (near-zero => fusable):")
     for name in models:
