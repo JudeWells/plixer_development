@@ -2411,122 +2411,167 @@ compute relative to attacking the density or the readout.
 
 ---
 
-## 23. External comparators — Boltz-2 and AutoDock Vina on the PLINDER panel (2026-08-13/14)
+## 23. External comparators — Boltz-2, AutoDock Vina and Gnina (2026-08-13/14)
 
-The question this section answers: **does Plixer's pocket-conditioned likelihood rank a true
-binder above decoys better than the tools a reviewer would name?** Two comparators were run to
-completion on the 107-system PLINDER subset, each pocket ranking the same 107-candidate panel
-(every system's true ligand, so each pocket has 1 positive and ~106 decoys, and every decoy is a
-genuine binder *of some other protein* — a hard, realistic decoy set).
+The question: **does Plixer's pocket-conditioned likelihood rank a true binder above decoys
+better than the tools a reviewer would name?** Three comparators were run to completion on the
+107-system PLINDER subset, each pocket ranking the same 107-candidate panel — every system's true
+ligand, so each pocket has 1 positive and ~106 decoys, and **every decoy is a genuine binder of
+some other protein**, which is a much harder decoy set than property-matched noise.
 
-Reproduce with `scripts/adhoc_analysis/comparator_report.py` (no GPU, reads the saved matrices).
+Reproduce with `scripts/adhoc_analysis/{comparator_report,gnina_collect}.py` — no GPU, reads the
+saved matrices.
 
 ### 23a. Result
 
-Identical 105-pocket × 107-candidate panel, 11,235 cells scored by all three methods.
+Identical 103-pocket × 107-candidate panel; 10,815 cells scored by **every** method.
 
-| method | z-norm AUC | vs Plixer ensemble (paired bootstrap) | pockets won |
-|---|---|---|---|
-| **Plixer ensemble (6)** | **0.7900** | — | — |
-| Plixer single member | 0.7775 | | |
-| **Boltz-2**, `affinity_probability_binary` | 0.7204 | **+0.0696** 95% CI [+0.0010, +0.1366] | 57/105 |
-| Boltz-2, affinity value (regression head) | 0.6588 | | |
-| **AutoDock Vina** | 0.6333 | **+0.1567** 95% CI [+0.0886, +0.2251] | 66/105 |
+| method | raw AUC | **z-norm AUC** | vs Plixer (paired bootstrap) | won |
+|---|---|---|---|---|
+| **Gnina CNNscore** | 0.7674 | **0.7885** | −0.0011 [−0.0627, +0.0613] | 44/103 |
+| **Plixer ensemble (6)** | 0.7829 | **0.7874** | — | — |
+| Gnina CNNaffinity | 0.5850 | 0.7365 | +0.0509 [−0.0112, +0.1140] | 59/103 |
+| Boltz-2, binder probability | 0.7042 | 0.7250 | +0.0624 [−0.0041, +0.1327] | 56/103 |
+| Gnina affinity (its own default fn) | 0.7134 | 0.7182 | +0.0692 [+0.0015, +0.1376] | 60/103 |
+| **AutoDock Vina** | 0.6412 | **0.6314** | **+0.1560 [+0.0856, +0.2261]** | 66/103 |
 
-Boltz-2 also beats Vina (+0.0871, 95% CI [+0.0109, +0.1658]). The ordering
-**Plixer > Boltz-2 > Vina** holds with no interval crossing zero.
+**The only comparator Plixer beats with an interval clear of zero is Vina.** Everything else is
+within noise on 103 pockets.
 
-🔑 **Read the Boltz-2 margin conservatively.** +0.070 with a lower bound of +0.001 and 57/105
-per-pocket wins is a real but slim advantage — Plixer is better *on average*, not reliably better
-on any given pocket. The 20-pocket pilot read **+0.183** and was small-sample optimism; the
-106-pocket number is the one to quote. Anything already written from the pilot needs revising.
+### 23b. 🚨 Gnina's CNNscore matches Plixer, and I predicted the opposite
 
-### 23b. 🔑 Boltz-2's regression head is much worse than its classifier head at this task
+**0.7885 against 0.7874 — difference −0.0011, 95% CI [−0.0627, +0.0613], 44/103 pockets. A dead
+tie.** `gnina_benchmark.py`'s first docstring reasoned that CNNscore answers *"is this pose
+right"* rather than *"does this bind"*, so it "is expected to rank worse for virtual screening".
+That reasoning was wrong, and it was wrong in the informative direction: **pose plausibility is
+itself a strong pocket-matching signal.** A ligand that cannot be posed well in a pocket is
+usually not its ligand, and asking that question turns out to be about as discriminative as
+Plixer's likelihood.
 
-Raw AUC 0.574 (affinity value) against 0.704 (binder probability); z-norm 0.659 against 0.714.
-The affinity value predicts **how potent a molecule is in general**, and every decoy here is a
-potent binder of something. General potency is therefore nearly uninformative about *which*
-pocket a ligand belongs to. That column z-normalisation lifts it 0.574 → 0.659 confirms most of
-what it contributes is a per-ligand offset rather than pocket specificity.
-**For virtual screening use `affinity_probability_binary`, not the affinity value.**
+It is also the *best* Gnina readout, ahead of CNNaffinity (0.7365), which Gnina's own
+documentation recommends for ranking. **For this task — which ligand goes with which pocket, not
+how potent is it — prefer CNNscore.**
 
-### 23c. 🔑 The three methods are near-orthogonal, and fusing them is the best result in the project
+⚠️ This means **Plixer does not clearly beat the best comparator.** The honest summary is that
+Plixer is *level with* Gnina's CNNscore, ahead of Boltz-2 and Gnina's other readouts by margins
+that do not clear zero on this panel, and clearly ahead only of Vina.
 
-Per-pocket AUCs barely correlate: r = +0.084 (Plixer/Boltz), +0.057 (Plixer/Vina), and
-**−0.035 (Boltz/Vina)**. Two co-trained neural affinity predictors being *anti*-correlated in
-which pockets they find hard is the surprising part. Blending the three column-z-normalised
-matrices:
+### 23c. ⚠️ The Plixer-over-Boltz-2 margin is NOT robust — a correction
+
+§23's first version reported +0.0696, 95% CI **[+0.0010, +0.1366]**, on a 105-pocket panel and
+called it "just excludes zero". Adding Gnina dropped 2 pockets (below), and on the resulting
+103-pocket panel the same comparison is **+0.0624, 95% CI [−0.0041, +0.1327]** — it now *includes*
+zero. Nothing changed but two pockets.
+
+**Do not claim Plixer beats Boltz-2.** A result whose significance turns on a 2-pocket
+perturbation was never significant in any useful sense; it sat on the boundary and the first
+report should have said so rather than leaning on which side of zero the bound fell.
+
+The earlier 20-pocket pilot's **+0.183** is likewise superseded and should not be cited.
+
+### 23d. 🔑 Boltz-2's regression head is much worse than its classifier head
+
+Raw AUC 0.574 (affinity value) against 0.704 (binder probability); z-norm 0.659 vs 0.725. The
+affinity value predicts **how potent a molecule is in general**, and every decoy here is potent
+against something — so it says little about *which* pocket. That z-normalisation lifts it
+0.574 → 0.659 confirms most of its content is a per-ligand offset. **Use
+`affinity_probability_binary` for screening, not the affinity value.**
+
+The same reading applies to Gnina CNNaffinity: raw 0.585 → z-norm 0.737, the largest gap in the
+table, and it correlates **r = +0.69 with heavy-atom count**. It is substantially a molecular-size
+readout. CNNscore, by contrast, barely moves (0.767 → 0.789) — it is genuinely pocket-specific,
+which is exactly why it ranks best.
+
+### 23e. 🔑 Fusion: 0.8641, the best number in the project
+
+Per-pocket AUCs are near-orthogonal to Plixer across the board — r = +0.089 (Boltz), +0.057
+(Vina), +0.197 (CNNaffinity), +0.111 (CNNscore), +0.090 (Gnina affinity) — and Boltz/Vina are
+even slightly **anti**-correlated (−0.061). Blending the column-z-normalised matrices:
 
 | | z-norm AUC |
 |---|---|
-| Plixer ensemble alone | 0.7900 |
-| **three-way fusion** | **0.8301** |
+| Plixer ensemble alone | 0.7874 |
+| **Plixer + Boltz-2 + Gnina CNNscore + Gnina affinity** | **0.8641** |
 
-**+0.0401, 95% CI [+0.0165, +0.0641], P(>0) = 1.000**, better on 64/105 pockets. This is the
-highest number the project has produced, ahead of the 0.785 decoder+composition blend (§12d).
+**+0.0767, 95% CI [+0.0339, +0.1186], P(>0) = 1.000, better on 70/103 pockets.**
 
-**The weights are honest.** They were selected leave-one-pocket-out, so no pocket helped choose
-the weights it was scored under; LOO and tuned-on-panel give the *same* 0.8301 because all 105
-folds selected the identical triple. A weight surface that stable is structural, not selection
-noise.
+**The selection is nested and honest.** Both the *subset* and the *weights* are chosen inside the
+leave-one-pocket-out loop over 1,565 (subset, weight) candidates, so no pocket contributed to
+choosing the combination it was then scored under. Nested LOO returns exactly the same 0.8641 as
+selecting on the full panel, because **all 103 folds selected the same subset**. An earlier pass
+that picked the best subset *after* looking at every subset's LOO score would have been
+optimistically biased; the nested version is what is reported.
 
-⚠️ **Vina takes the larger comparator weight (0.30) despite being much the weakest alone
-(0.633)**, with Boltz at 0.20 and Plixer at 0.50. A physics-based scoring function carries
-information neither neural model has. The lesson generalises past this table: *comparator
-strength alone does not predict fusion value — decorrelation does.*
+⚠️ **Vina is not in the winning subset**, despite being in the 3-way optimum. Gnina's two
+non-CNNaffinity readouts displace it — unsurprising given r = +0.446 between Vina and Gnina's
+empirical score. Fusion membership is unstable to which comparators are available and should not
+be over-interpreted.
 
-### 23d. Caveats, in the order they would be raised
+**Panel size does not drive the gain.** Subsampling decoys per pocket (positives always kept,
+weights re-tuned, 20 repeats) gives +0.0407 / +0.0372 / +0.0416 / +0.0398 / +0.0401 at 10 / 20 /
+40 / 70 / 105 decoys — flat. So §3b's shrinkage on the 943-panel (+0.032 → +0.005) was specific to
+the *composition* readout, not a generic panel-size effect. ⚠️ What this does **not** test is
+decoy *diversity*: a bigger panel draws harder, more varied decoys, and that axis needs ~889k
+dockings to probe, so it remains open.
+
+### 23f. Caveats, in the order they would be raised
+
+⚠️ **Gnina at defaults is NOT Vina's scoring function.** `gnina --help` lists `default` and `vina`
+as separate `--scoring` choices, so out of the box Gnina optimises its own empirical function,
+which also guides the search. Measured on 2,378 identical pairs: **Spearman 0.75** where both
+place the ligand (not ~0.95), Gnina ~1 kcal/mol weaker, and **Vina places a ligand Gnina cannot on
+6.8% of pairs against 0.1% the reverse**. So Gnina-vs-Vina here is *two tools as normally run*,
+not a controlled scoring-function experiment. `--scoring vina` would be that experiment; it was
+not run.
 
 ⚠️ **The Vina receptors are fair but not pristine.** `parquet_v2` stores protein coordinates and
-element symbols only — no residue names, atom names or bonds — so atom typing was done
-geometrically (a polar hydrogen is one within 1.25 Å of N/O → `HD`; acceptors from element).
-This is defensible because **Vina's scoring function uses no partial charges** (that is AutoDock4)
-and collapses aliphatic/aromatic carbon to one hydrophobic term, so the missing ring perception
-costs nothing *in the scoring function*. What is genuinely lost: per-residue protonation choices
-(we inherit HiQBind's) and metal/cofactor typing. Read 0.633 as **"Vina as preparable from this
-data"**, not Vina's ceiling. The +0.157 margin is wide enough that better preparation is unlikely
-to close it, but the sentence belongs next to the number.
+element symbols only — no residue names, atom names or bonds — so atom typing is geometric (polar
+H within 1.25 Å of N/O → `HD`; acceptors by element). Defensible because **Vina's scoring uses no
+partial charges** (that is AutoDock4) and merges aliphatic/aromatic carbon, so absent ring
+perception costs nothing *in the scoring function*. Lost: per-residue protonation (inherited from
+HiQBind) and metal/cofactor typing. Read 0.631 as **"Vina as preparable from this data"**, not
+Vina's ceiling. Gnina used the identical receptors, so it inherits this caveat — and still scored
+0.7885, which bounds how much the preparation can be costing.
 
-⚠️ **Boltz-2 is arguably off-distribution here.** It is built to regress affinity for known
-binders, not to discriminate which of many real binders matches a given pocket. This is a fair
-test of *using* it for screening, not of what it was optimised for.
+⚠️ **Boltz-2 is arguably off-distribution**: built to regress affinity for known binders, not to
+discriminate which of many real binders matches a pocket. A fair test of *using* it to screen.
 
-⚠️ **Missing cells are dropped, never imputed, and dropped from all three methods together.**
-Boltz lost one pocket to a missing MSA (99.1% coverage) and Vina failed on 107 scattered pairs
-(99.1%); the intersection is 105 pockets. Imputation is not a safe shortcut here — see §23e.
+⚠️ **Coverage.** Boltz lost 1 pocket to a missing MSA; Vina failed on 107 scattered pairs; Gnina
+rejected **2 ligands** whose Meeko PDBQTs carry macrocycle glue pseudo-atoms (`CG0`/`G0`) that its
+parser does not accept — exactly 2 × 107 = 214 cells. Cells absent from any method are dropped
+from **all** methods, leaving 103 pockets, so every number above is on identical cells.
 
-⚠️ **Single panel, 105 pockets.** These margins are not resolvable below ~0.02, and the fusion
-weights are fitted on ~105 points. The fusion result deserves confirmation on the 943-system
-chronological panel before it is leaned on hard — and §3b of the ensemble package already shows
-fusion gains **shrink markedly on a larger panel** (+0.005 vs +0.032), so expect the +0.040 to
-come down.
+⚠️ **103 pockets resolves differences of roughly ±0.06.** Only the Vina gap and the fusion gain
+survive that. Everything else in §23a is a tie by this panel's standards.
 
-### 23e. ⚠️ The imputation trap that produced a fake 0.947
+### 23g. ⚠️ The imputation trap that produced a fake 0.947
 
 An early Boltz collect filled unscored cells with the row minimum — normally safe when data are
-missing at random. It read **AUC 0.9471 at 21% completion** against 0.717 for the same model on
-the complete pilot.
+missing at random. It read **AUC 0.9471 at 21% completion** against 0.717 on the complete pilot.
 
-**Boltz runs in two phases: every pocket's true ligand is scored long before the decoys.** So at
-any partial completion the *positives* are observed and the *negatives* are imputed to the floor,
-which manufactures near-perfect separation. Docking failures are not missing-at-random either
-(they correlate with ligand size and flexibility). Both collectors now **score only cells that
-exist**, and the rule is worth applying to any partially-complete comparator matrix.
+**Boltz scores every pocket's true ligand before any decoy**, so at partial completion the
+*positives* are observed and the *negatives* are imputed to the floor, manufacturing near-perfect
+separation. Docking failures are not missing-at-random either (they track ligand size and
+flexibility). Both collectors now **score only cells that exist**.
 
-### 23f. Operational notes
+### 23h. Operational notes
 
-* **Boltz predicts all structures, then all affinities**, so a disk janitor gated on "an affinity
-  JSON exists" never fires during the structure phase — 8 shards took free space 28 GB → 10 GB
-  before anything was cleaned. `scripts/launchers/boltz_janitor.sh` uses two rules: PAE/PDE
-  diagnostics deleted on sight, structures deleted only once consumed. It reclaimed 19 GB.
+* **Gnina's "static" release is not static** — it needs cuDNN 9 and the CUDA 12 runtime. These
+  live in `tools/cudnn9` and must be kept **off** `venvPlixer`'s path: torch 2.3.1 needs cuDNN 8
+  and breaks if it resolves 9. `--no_gpu_output` is not a real flag.
+* **Gnina is CPU-bound here, not GPU-bound.** 32 workers over 8 H100s ran at 1–9% GPU utilisation
+  and load 114/128 — the Monte Carlo search is on CPU and only the CNN rescore uses the GPU.
+  ~2 pairs/s, 11,433 pairs in ~95 min.
+* **Boltz predicts all structures, then all affinities**, so a janitor gated on "an affinity JSON
+  exists" never fires during the structure phase — free space went 28 GB → 10 GB before anything
+  was cleaned. The two-rule janitor reclaimed 19 GB.
 * **Vina's `Vina(...)` defaults to `cpu=0` meaning "all cores"**, so each pool worker spawns a
-  full-machine thread pool and the run gets *slower* as workers are added. Pass `cpu=1` and take
-  parallelism from the process pool.
-* **The PDBQT charge field is ten characters wide, not nine.** Nine gives
-  `Charge "0.000 " is not valid` and rejects the whole file.
+  full-machine thread pool and the run gets *slower* as workers are added. Pass `cpu=1`.
+* **The PDBQT charge field is ten characters wide, not nine** — nine gives
+  `Charge "0.000 " is not valid` and rejects the file.
 
-### 23g. Why not CrossDocked instead of running Vina
+### 23i. Why not CrossDocked instead of running Vina
 
-Checked before committing the compute. The 107 PLINDER systems span **52 clusters**, giving only
-**728 within-cluster candidate pairs** against the **11,449** the full panel needs — **6.4%
+Checked before spending the compute. The 107 PLINDER systems span **52 clusters**, giving only
+**728 within-cluster candidate pairs** against the **11,449** a full panel needs — **6.4%
 coverage**. CrossDocked cannot supply this matrix; the cross-docking had to be run.
